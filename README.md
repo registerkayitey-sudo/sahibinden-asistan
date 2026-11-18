@@ -2,16 +2,16 @@
 
 Sahibinden'de gezdiğin araç ilanlarını kaydeder, kendi filtrelerine göre eler ve puanlar. Yanında piyasa analizi ve yerel AI ile fotoğraf ve açıklama analizi yapar. Sonuçları Claude'a yapıştırılacak kısa bir özet olarak da verebilir.
 
-- Her şey kendi tarayıcında çalışır. Veriler hiçbir sunucuya gitmez.
+- Her şey kendi tarayıcında çalışır. Veriler, sadece sen [GitHub paylaşımını](#5-ortak-veri-bilgisayarların-ve-arkadaşların-arasında) açarsan, senin özel veri repona gider.
 - Yerel AI (Ollama) ücretsizdir ve token harcamaz. İstersen hiç kurmadan da kullanabilirsin.
 
 ## 1. Kurulum (5 dakika)
 
 1. Tarayıcına **Tampermonkey** eklentisini kur (Chrome, Edge, Firefox). Safari'de ücretsiz **Userscripts** uygulamasını kullanabilirsin.
 2. **Sadece Chrome/Edge'de:** `chrome://extensions` sayfasını aç, Tampermonkey'de **Ayrıntılar**'a tıkla ve **"Kullanıcı komut dosyalarına izin ver"** seçeneğini aç.
-3. Script'i yükle:
-   - Link paylaşıldıysa linke tıkla, Tampermonkey kurulum ekranı açılır, **Yükle**'ye bas.
-   - Dosya paylaşıldıysa Tampermonkey panelini aç, **Yardımcı Araçlar → Dosyadan içe aktar** ile `sahibinden-asistan.user.js` dosyasını seç.
+3. Script'i yükle: **[sahibinden-asistan.user.js](https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js)** linkine tıkla, Tampermonkey kurulum ekranı açılır, **Yükle**'ye bas. Bu linkten kurarsan yeni sürümler kendiliğinden gelir.
+
+   Dosyadan kurmak istersen: Tampermonkey paneli → **Yardımcı Araçlar → Dosyadan içe aktar** → `sahibinden-asistan.user.js`. Bu şekilde kurulan script kendiliğinden güncellenmez.
 4. Sahibinden'i aç. Sağ altta **🚗 Asistan** düğmesini görmelisin.
 
 ## 2. Yerel AI (isteğe bağlı, önerilir)
@@ -28,7 +28,10 @@ Fotoğraflardan kırmızı koltuk, jant tipi ve ızgara rengini tespit eder, ila
    ```bash
    launchctl setenv OLLAMA_ORIGINS "chrome-extension://*,moz-extension://*,safari-web-extension://*"
    ```
-   Windows'ta aynı değeri `OLLAMA_ORIGINS` ortam değişkeni olarak ekle.
+   Windows'ta komut istemine şunu yaz, sonra Ollama'yı sistem tepsisinden kapatıp yeniden aç:
+   ```bat
+   setx OLLAMA_ORIGINS "chrome-extension://*,moz-extension://*"
+   ```
 
 Fotoğraf analizi Apple Silicon Mac'lerde ve ekran kartı olan PC'lerde fotoğraf başına birkaç saniye sürer. Ekran kartı olmayan eski bir bilgisayarda çok yavaş olabilir. O durumda Ayarlar'da `"enabled": false` yap; görsel kriterler "fotoğraf analizi bekliyor" olarak kalır, onlara kendin bakarsın.
 
@@ -49,7 +52,7 @@ Fiyatı değişen ilanları tekrar açarsan asistan eski ve yeni fiyatı uyarı 
 
 "Kontrol edilecekler" listesinde, ilandan doğrulanamayan her şartın yanında **Var / Yok** düğmeleri çıkar (ör. "Hayalet gösterge (HUD) ilanda geçmiyor"). İlana bakıp işaretlersin: **Var** dersen ilan o şartı sağlamış sayılır ve sıralamaya girer, **Yok** dersen elenir. Yanlış bastıysan **geri al** ile kaldırırsın; elenenler listesindeki ilanlarda da bu düğme durur.
 
-Puan dökümündeki kriterleri de aynı şekilde elle işaretleyebilirsin. Senin kararın metin ve fotoğraf analizinin önüne geçer, yerel AI elle karara bağladığın kriterlere bir daha bakmaz. Kararlar ilanla birlikte saklanır; **Veri → dışa aktar** ile başka bilgisayara taşınır, ayar değiştirince silinmez.
+Puan dökümündeki kriterleri de aynı şekilde elle işaretleyebilirsin. Senin kararın metin ve fotoğraf analizinin önüne geçer, yerel AI elle karara bağladığın kriterlere bir daha bakmaz. Kararlar ilanla birlikte saklanır, ayar değiştirince silinmez. GitHub paylaşımı açıksa diğer bilgisayarlarına da gider.
 
 ## 4. Ayarlar
 
@@ -65,18 +68,42 @@ Panelde **Ayarlar** sekmesinden JSON olarak düzenlenir. Değişiklikler tüm ka
 
 `ayarlar-bmw.json` varsayılan ayarlardır. Arkadaşlarına kendi ayarlarını göndermek için **Ayarlar → Dosyaya indir**, yüklemek için **Dosyadan yükle**.
 
-## 5. Arkadaşlarla paylaşma
+## 5. Ortak veri: bilgisayarların ve arkadaşların arasında
 
-En kolayı script'i bir GitHub Gist'e koymak:
+İlanları, AI analizlerini ve Var/Yok kararlarını GitHub'daki **özel** bir veri reposunda tutar. Böylece bir bilgisayarda gezdiğin ve analiz ettiğin ilanları öbür bilgisayarda tekrar gezmen ve analiz etmen gerekmez.
 
-1. https://gist.github.com adresinde `sahibinden-asistan.user.js` adıyla yeni bir gist oluştur ve dosyanın içeriğini yapıştır.
-2. Gist'in **Raw** linkini kopyala, linkteki commit kimliğini sil (`.../raw/<uzun-kod>/sahibinden-asistan.user.js` → `.../raw/sahibinden-asistan.user.js`).
-3. Script'in en üstündeki `// @version` satırının altına şunları ekle:
-   ```
-   // @updateURL    <raw link>
-   // @downloadURL  <raw link>
-   ```
-4. Arkadaşlarına raw linki gönder. Script'i güncelleyip `@version` numarasını artırdığında Tampermonkey herkeste otomatik günceller.
+**Nasıl çalışır**
+
+- Veri reposunda herkesin klasörü ayrı: `ilanlar/<kullanıcı adı>/<ilan no>.json`. Script sadece senin klasörüne yazar.
+- Kendi bilgisayarlarının hepsine **aynı kullanıcı adını** girersen hepsi aynı veriyi görür. Aynı ilan iki bilgisayarda farklıysa birleştirilir: en son görülen ilan bilgisi, birleşik fiyat geçmişi, en yeni analiz ve en yeni karar kalır.
+- **Paylaşım** sekmesinde, veri reposunda klasörü olan diğer kişileri tek tek **dahil edebilirsin**. Varsayılan olarak kimse dahil değildir, sadece kendi verini görürsün.
+- Dahil ettiğin birinin ilanı listende "kaynak: ali" gibi görünür, onun AI analizleri ve kararları da adıyla işaretlenir. Senin kopyan varsa esas o alınır, eksikleri onunkinden tamamlanır.
+- Başkasının ilanında bir şeyi değiştirirsen (Var/Yok ya da AI analizi) onun dosyasına dokunulmaz: ilan **senin klasörüne kopyalanır** ve değişiklik orada yapılır. Yani aynı ilanın iki kopyası olur.
+- Eşitleme otomatiktir: ilan kaydedince, karar verince, AI analizi bitince ve paneli açınca. Sağ üstteki ☁ yazısına tıklayarak elle de eşitleyebilirsin.
+
+**Kurulum (repo sahibi bir kez yapar)**
+
+1. GitHub'da [yeni bir fine-grained token](https://github.com/settings/personal-access-tokens/new) oluştur:
+   - **Token name:** `sahibinden-asistan-veri`
+   - **Expiration:** istediğin süre (dolunca yenisini oluşturup herkese yeniden vermen gerekir)
+   - **Repository access:** *Only select repositories* → `sahibinden-asistan-veri`
+   - **Permissions → Repository permissions → Contents:** *Read and write* (Metadata kendiliğinden *Read-only* olur)
+   - **Generate token** → çıkan `github_pat_…` değerini kopyala. Bu değer bir daha gösterilmez.
+2. Her bilgisayarda: **🚗 Asistan → Paylaşım** → kullanıcı adını yaz (ör. `efe`) → token'ı yapıştır → **Kaydet ve eşitle**.
+3. İlk eşitlemede Tampermonkey `api.github.com` adresine erişim için izin isterse **Her zaman izin ver** de.
+
+**Arkadaşlar için**
+
+Arkadaşın script'i yukarıdaki linkten kurar. Paylaşım sekmesine kendine ait farklı bir kullanıcı adı (ör. `ali`) ve senin verdiğin token'ı girer. GitHub hesabı olması gerekmez.
+
+Token'ı paylaşmanın bedeli şu: token'ı olan herkes veri reposunun tamamını okuyabilir ve teknik olarak her klasöre yazabilir. Script başkasının klasörüne yazmaz, git geçmişi de her sürümü sakladığı için bir şey bozulursa geri alınabilir. Birini çıkarmak istersen eski token'ı GitHub'dan sil, yenisini oluşturup sadece kalanlara ver.
+
+**Bilmen gerekenler**
+
+- Token sadece o tarayıcıda saklanır. Ayar dosyasına, veri dışa aktarımına ve Claude için kopyalanan metne girmez.
+- Ayarlar (filtreler, puanlar) eşitlenmez, herkes kendi kriterleriyle sıralar. Aynı ayarları kullanmak için **Ayarlar → Dosyaya indir / Dosyadan yükle**.
+- **Veri → Tüm ilanları sil** sadece o tarayıcıdaki kopyayı siler. GitHub'daki dosyalar durur, otomatik eşitleme açıksa bir sonraki eşitlemede geri gelir.
+- İlan açıklamalarında satıcı adı ya da telefonu geçebildiği için veri reposu **özel** kalmalı.
 
 ## Bilinen sınırlar
 

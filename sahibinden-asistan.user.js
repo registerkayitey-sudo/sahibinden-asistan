@@ -1,8 +1,11 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.4.0
-// @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır.
+// @version      0.5.0
+// @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
+// @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
+// @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
+// @downloadURL  https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
 // @match        https://www.sahibinden.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -13,6 +16,7 @@
 // @connect      localhost
 // @connect      127.0.0.1
 // @connect      shbdn.com
+// @connect      api.github.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -187,8 +191,21 @@
     return partial ? partial[1] : null;
   }
 
-  // Kullanıcının elle verdiği kararlar: { 'feat:Hayalet gösterge (HUD)': true, 'part:Tavan': false, ... }
-  const manualOf = (l) => (l && l.manual) || {};
+  // Elle verilen kararlar ilanda { anahtar: { v: true | false | null, at } } olarak durur
+  // (ör. 'feat:Hayalet gösterge (HUD)', 'part:Tavan', 'crit:kirmizi').
+  // v: null "geri alındı" demek; silinmez ki başka bilgisayarla eşitlenirken eski karar geri gelmesin.
+  // 0.4.0 düz true/false tutuyordu, o da okunur. manualOf geçerli kararları true/false olarak verir.
+  const manualEntry = (x) => (typeof x === 'boolean' ? { v: x, at: 0 } : x && typeof x === 'object' ? x : null);
+  function manualOf(l) {
+    const out = {};
+    for (const [k, x] of Object.entries((l && l.manual) || {})) {
+      const e = manualEntry(x);
+      if (e && typeof e.v === 'boolean') out[k] = e.v;
+    }
+    return out;
+  }
+  // Karar dahil ettiğin başka bir kişiden geliyorsa onun adı, seninse null
+  const manualBy = (l, key) => (l && l._manualBy && l._manualBy[key]) || null;
 
   function evalHard(l, cfg) {
     const h = cfg.hardFilters;
@@ -199,8 +216,9 @@
     // İlandan doğrulanamayan bir şart: kullanıcı karar verdiyse onu uygula, vermediyse sor.
     const ask = (key, label, yes, no, failLabel) => {
       const d = man[key];
-      if (d === true) decided.push({ key, label, yes, no, ok: true });
-      else if (d === false) { decided.push({ key, label, yes, no, ok: false }); fails.push(`${failLabel} (senin kontrolün)`); }
+      const by = manualBy(l, key);
+      if (d === true) decided.push({ key, label, yes, no, ok: true, by });
+      else if (d === false) { decided.push({ key, label, yes, no, ok: false, by }); fails.push(`${failLabel} (${by ? by + ' kontrol etti' : 'senin kontrolün'})`); }
       else unknowns.push({ key, label, yes, no });
     };
 
@@ -239,19 +257,21 @@
     // Senin kararın her şeyin önünde gelir: metne de fotoğraf analizine de bakmaz.
     const override = (id) => {
       const m = man['crit:' + id];
-      if (m === true) return { met: true, manual: true, via: 'senin kontrolün: var' };
-      if (m === false) return { met: false, manual: true, via: 'senin kontrolün: yok' };
-      return null;
+      if (typeof m !== 'boolean') return null;
+      const by = manualBy(l, 'crit:' + id);
+      return { met: m, manual: true, by, via: `${by ? by + ' kontrol etti' : 'senin kontrolün'}: ${m ? 'var' : 'yok'}` };
     };
+    const visionBy = (l._aiBy && l._aiBy.vision) || {};
     for (const c of crit.filter((c) => !c.allOf)) {
       const o = override(c.id);
       if (o) { res[c.id] = o; continue; }
       const kw = findKeyword(corpus, c.keywords);
       const v = vision[c.id];
+      const vTxt = v ? `fotoğraf (${v.yes} evet / ${v.no} hayır)${visionBy[c.id] ? ' · ' + visionBy[c.id] : ''}` : null;
       if (kw) res[c.id] = { met: true, via: `metin: "${kw}"` };
-      else if (v && v.result === true) res[c.id] = { met: true, via: `fotoğraf (${v.yes} evet / ${v.no} hayır)` };
+      else if (v && v.result === true) res[c.id] = { met: true, via: vTxt };
       else if (c.vision && !(v && v.question === c.vision)) res[c.id] = { met: false, pending: true, via: 'fotoğraf analizi bekliyor' };
-      else res[c.id] = { met: false, via: v ? `fotoğraf (${v.yes} evet / ${v.no} hayır)` : null };
+      else res[c.id] = { met: false, via: vTxt };
     }
     for (const c of crit.filter((c) => c.allOf)) {
       const o = override(c.id);
@@ -296,13 +316,134 @@
       ...(s.criteria || []).filter((c) => c.points > 0).map((c) => ({
         name: c.name, points: crit[c.id].met ? c.points : 0, max: c.points, via: crit[c.id].via, pending: crit[c.id].pending,
         // Metinde birebir geçen kriterde sorulacak bir şey yok; gerisini elle doğrulayabilirsin.
-        key: `crit:${c.id}`, met: crit[c.id].met, manual: crit[c.id].manual,
+        key: `crit:${c.id}`, met: crit[c.id].met, manual: crit[c.id].manual, manualBy: crit[c.id].by || null,
         askable: !String(crit[c.id].via || '').startsWith('metin:'),
       })),
     ];
     const total = lines.reduce((a, x) => a + x.points, 0);
     const max = lines.reduce((a, x) => a + x.max, 0);
     return { total, max, lines, crit, tramer };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Ortak veri: aynı ilanın kopyalarını birleştirme
+  // ---------------------------------------------------------------------------
+  // Anahtar sırası sabit JSON: iki bilgisayar aynı ilanı aynı metne çevirsin ki gereksiz yere gönderilmesin.
+  // '_' ile başlayan alanlar sadece ekranda gösterim içindir, saklanmaz.
+  function stableStringify(x) {
+    const norm = (v) => {
+      if (Array.isArray(v)) return v.map(norm);
+      if (v && typeof v === 'object') {
+        const o = {};
+        for (const k of Object.keys(v).sort()) if (v[k] !== undefined && !k.startsWith('_')) o[k] = norm(v[k]);
+        return o;
+      }
+      return v;
+    };
+    return JSON.stringify(norm(x), null, 1) + '\n';
+  }
+
+  // İki sürümden puanı yüksek olanı seç; eşitlikte içeriğe göre sabit seçim yap
+  // (yoksa iki bilgisayar her eşitlemede birbirinin sürümünü ezip durur).
+  function better(u, v, score) {
+    if (!u) return v;
+    if (!v) return u;
+    const su = score(u), sv = score(v);
+    if (su !== sv) return sv > su ? v : u;
+    return stableStringify(v) > stableStringify(u) ? v : u;
+  }
+
+  function mergeManual(a, b) {
+    const out = {};
+    for (const src of [a || {}, b || {}]) {
+      for (const [k, x] of Object.entries(src)) out[k] = better(manualEntry(out[k]), manualEntry(x), (e) => e.at || 0);
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  function mergeAI(a, b) {
+    if (!a || !b) return a || b;
+    const vision = {};
+    for (const src of [a.vision || {}, b.vision || {}]) {
+      for (const [id, v] of Object.entries(src)) vision[id] = better(vision[id], v, (x) => (x.at || 0) * 1000 + (x.yes || 0) + (x.no || 0));
+    }
+    const out = { ...a, ...b };
+    out.vision = Object.keys(vision).length ? vision : undefined;
+    out.text = better(a.text, b.text, (t) => (t.error ? 0 : 1e15) + (t.at || 0));
+    out.photos = better(a.photos, b.photos, (p) => p.at || 0);
+    return out;
+  }
+
+  // Aynı kişinin iki bilgisayarındaki kopyası: en son görülen ilan bilgisi, birleşik fiyat geçmişi,
+  // kriter başına en yeni analiz ve en yeni elle karar.
+  function mergeSame(a, b) {
+    if (!a || !b) return a || b;
+    const newer = better(a, b, (x) => x.lastSeen || 0);
+    const older = newer === a ? b : a;
+    const hist = [...(a.priceHistory || []), ...(b.priceHistory || [])].sort((x, y) => (x.at || 0) - (y.at || 0) || x.price - y.price);
+    const firsts = [a.firstSeen, b.firstSeen].filter((x) => x != null);
+    return {
+      ...older,
+      ...newer,
+      firstSeen: firsts.length ? Math.min(...firsts) : undefined,
+      lastSeen: Math.max(a.lastSeen || 0, b.lastSeen || 0) || undefined,
+      priceHistory: hist.filter((p, i) => i === 0 || p.price !== hist[i - 1].price),
+      ai: mergeAI(a.ai, b.ai),
+      manual: mergeManual(a.manual, b.manual),
+    };
+  }
+
+  function aiOwners(ai, user) {
+    const by = { vision: {} };
+    if (!ai) return by;
+    for (const id of Object.keys(ai.vision || {})) by.vision[id] = user;
+    if (ai.text) by.text = user;
+    if (ai.photos) by.photos = user;
+    return by;
+  }
+
+  // Başka bir kişinin kopyasını ekrandaki görünüme kat. Senin kopyan (base) varsa o esastır,
+  // sende olmayan elle kararlar ve analizler onunkinden tamamlanır ve kimden geldiği işaretlenir.
+  function combineOther(base, o, user) {
+    if (!base) {
+      const c = JSON.parse(JSON.stringify(o));
+      c._owner = user;
+      c._manualBy = {};
+      for (const [k, x] of Object.entries(c.manual || {})) {
+        const e = manualEntry(x);
+        if (e && typeof e.v === 'boolean') c._manualBy[k] = user;
+      }
+      c._aiBy = aiOwners(c.ai, user);
+      return c;
+    }
+    const by = base._aiBy || {};
+    const c = { ...base, _manualBy: { ...(base._manualBy || {}) }, _aiBy: { ...by, vision: { ...(by.vision || {}) } } };
+    const man = { ...(base.manual || {}) };
+    for (const [k, x] of Object.entries(o.manual || {})) {
+      const e = manualEntry(x), cur = manualEntry(man[k]);
+      if (!e || typeof e.v !== 'boolean' || (cur && typeof cur.v === 'boolean')) continue;
+      man[k] = e;
+      c._manualBy[k] = user;
+    }
+    c.manual = man;
+    const ai = { ...(base.ai || {}) };
+    const oa = o.ai || {};
+    for (const [id, v] of Object.entries(oa.vision || {})) {
+      if (ai.vision && ai.vision[id]) continue;
+      ai.vision = { ...(ai.vision || {}), [id]: v };
+      c._aiBy.vision[id] = user;
+    }
+    if ((!ai.text || ai.text.error) && oa.text && !oa.text.error) { ai.text = oa.text; c._aiBy.text = user; }
+    if (!ai.photos && oa.photos) { ai.photos = oa.photos; c._aiBy.photos = user; }
+    c.ai = ai;
+    return c;
+  }
+
+  // Başkasının ilanında bir şeyi değiştirdiğinde onunkine dokunulmaz: gördüğün hali senin kopyan olur.
+  function ownCopyOf(view) {
+    const c = JSON.parse(stableStringify(view));
+    if (view._owner) c.copiedFrom = view._owner;
+    return c;
   }
 
   // ---------------------------------------------------------------------------
@@ -449,7 +590,7 @@
       out.push(`Boya/değişen: ${nonOrig.length ? nonOrig.join(', ') : 'tüm parçalar orijinal'}`);
     }
     if (r.hard.unknowns.length) out.push(`Doğrulanamayanlar: ${r.hard.unknowns.map((u) => u.label).join('; ')}`);
-    if (r.hard.decided.length) out.push(`Elle kontrol ettiklerim: ${r.hard.decided.map((d) => `${d.label} → ${d.ok ? 'var/uygun' : 'yok/uygun değil'}`).join('; ')}`);
+    if (r.hard.decided.length) out.push(`Elle kontrol edilenler: ${r.hard.decided.map((d) => `${d.label} → ${d.ok ? 'var/uygun' : 'yok/uygun değil'}${d.by ? ` (${d.by} kontrol etti)` : ''}`).join('; ')}`);
     if (r.flags.length) out.push(`Uyarılar: ${r.flags.join('; ')}`);
     const t = l.ai && l.ai.text;
     if (t && !t.error) {
@@ -490,7 +631,10 @@
   // ---------------------------------------------------------------------------
   // Buradan sonrası tarayıcıya özel
   // ---------------------------------------------------------------------------
-  const CORE = { DEFAULT_CONFIG, fold, findKeyword, parseTramer, evalHard, evalCriteria, kmScore, tramerScore, scoreListing, ruleFlags, marketModel, computeRows, claudePrompt };
+  const CORE = {
+    DEFAULT_CONFIG, fold, findKeyword, parseTramer, evalHard, evalCriteria, kmScore, tramerScore, scoreListing, ruleFlags, marketModel, computeRows, claudePrompt,
+    stableStringify, mergeSame, combineOther, ownCopyOf, manualOf,
+  };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = CORE;
     return;
@@ -513,6 +657,25 @@
   }
   function clearListings() {
     for (const k of listingKeys()) GM_deleteValue(k);
+  }
+
+  // Başkalarının GitHub'dan gelen ilanları ayrı tutulur: diger:<kullanıcı>:<dosya adı>
+  const OTHER = 'diger:';
+  const otherKeys = (user) => GM_listValues().filter((k) => k.startsWith(OTHER + (user ? user + ':' : '')));
+
+  // Sıralamada görünen ilanlar: kendi ilanların + dahil ettiğin kişilerinkiler.
+  // Aynı ilan birden çok kişide varsa senin kopyan esas alınır, eksikleri diğerlerinden tamamlanır.
+  function loadAllListings() {
+    const out = loadListings();
+    const inc = loadShare().include;
+    if (!inc.length) return out;
+    for (const k of otherKeys()) {
+      const user = k.slice(OTHER.length).split(':')[0];
+      if (!inc.includes(user)) continue;
+      const o = GM_getValue(k, null);
+      if (o && o.id) out[o.id] = combineOther(out[o.id], o, user);
+    }
+    return out;
   }
   function migrateStorage() {
     const old = GM_getValue('listings', null); // 0.1.0 tüm ilanları tek anahtarda tutuyordu
@@ -636,7 +799,8 @@
     const now = Date.now();
     const history = prev && prev.priceHistory ? prev.priceHistory.slice() : [];
     if (l.price && (!history.length || history[history.length - 1].price !== l.price)) history.push({ price: l.price, at: now });
-    const rec = { ...l, firstSeen: prev ? prev.firstSeen : now, lastSeen: now, priceHistory: history, ai: prev ? prev.ai : undefined, manual: prev ? prev.manual : undefined };
+    const keep = prev ? { ai: prev.ai, manual: prev.manual, copiedFrom: prev.copiedFrom } : {};
+    const rec = { ...l, ...keep, firstSeen: prev ? prev.firstSeen : now, lastSeen: now, priceHistory: history };
     putListing(rec);
     saveQueue(loadQueue().filter((u) => u !== l.url));
     return rec;
@@ -822,7 +986,8 @@
     } catch (e) {
       return setStatus('⚠ ' + e.message);
     }
-    const result = computeRows(loadListings(), cfg);
+    const all = loadAllListings();
+    const result = computeRows(all, cfg);
     const targets = [...result.passed, ...result.unsure].map((r) => r.l.id);
     aiRunning = true;
     const run = (aiRun = { cancel: false, consecutiveFails: 0, failed: 0, missing: 0 });
@@ -831,32 +996,45 @@
       for (const id of targets) {
         if (run.cancel) break;
         n++;
-        const l = getListing(id);
-        if (!l) continue;
-        const ai = l.ai || {};
-        const todo = visionTodo(l, cfg);
-        const label = `(${n}/${targets.length}) ${l.title.slice(0, 40)}`;
-        if (todo.length && (l.images || []).length) {
-          const { votes, photos } = await analyzeVision(l, cfg, todo, run, (s) => setStatus(`${label}: ${s}`));
+        const view = all[id];
+        if (!view) continue;
+        // Sen ya da dahil ettiğin biri zaten baktıysa tekrar bakma
+        const todo = (view.images || []).length ? visionTodo(view, cfg) : [];
+        const needText = !view.ai || !view.ai.text || !!view.ai.text.error;
+        if (!todo.length && !needText) continue;
+        const label = `(${n}/${targets.length}) ${view.title.slice(0, 40)}`;
+        const add = {};
+        if (todo.length) {
+          const { votes, photos } = await analyzeVision(view, cfg, todo, run, (s) => setStatus(`${label}: ${s}`));
           if (run.cancel) break; // yarım kalan ilanın sonucunu kaydetme
           run.failed += photos.failed;
           run.missing += photos.missing;
-          ai.photos = { ...photos, at: Date.now() };
+          const at = Date.now();
+          add.photos = { ...photos, at };
           // Hiç fotoğraf incelenemediyse sonucu kaydetme ki sonraki çalıştırmada tekrar denensin;
           // fotoğraflar silinmişse (ilan kaldırılmış) tekrar denemenin anlamı yok.
-          if (photos.ok > 0 || (photos.missing > 0 && photos.failed === 0)) ai.vision = { ...(ai.vision || {}), ...votes };
-        }
-        if (!ai.text || ai.text.error) {
-          setStatus(`${label}: açıklama inceleniyor`);
-          try {
-            ai.text = await analyzeText(l);
-          } catch (e) {
-            if (/Ollama/.test(e.message)) throw e;
-            ai.text = { error: e.message };
+          if (photos.ok > 0 || (photos.missing > 0 && photos.failed === 0)) {
+            add.vision = Object.fromEntries(Object.entries(votes).map(([k, v]) => [k, { ...v, at }]));
           }
         }
-        const fresh = getListing(id); // analiz sürerken ilan başka sekmede güncellenmiş olabilir
-        if (fresh) putListing({ ...fresh, ai });
+        if (needText) {
+          setStatus(`${label}: açıklama inceleniyor`);
+          try {
+            add.text = { ...(await analyzeText(view)), at: Date.now() };
+          } catch (e) {
+            if (/Ollama/.test(e.message)) throw e;
+            add.text = { error: e.message, at: Date.now() };
+          }
+        }
+        // Sonuç senin kopyana yazılır; ilan başkasınınsa onunkine dokunulmaz, sende kopyası oluşur.
+        // getListing tekrar okunuyor: analiz sürerken ilan başka sekmede güncellenmiş olabilir.
+        const base = getListing(id) || ownCopyOf(view);
+        const ai = { ...(base.ai || {}) };
+        if (add.photos) ai.photos = add.photos;
+        if (add.vision) ai.vision = { ...(ai.vision || {}), ...add.vision };
+        if (add.text) ai.text = add.text;
+        putListing({ ...base, ai });
+        scheduleSync(10000);
         render();
       }
       const photoNote = [run.failed ? `${run.failed} fotoğraf indirilemedi` : '', run.missing ? `${run.missing} fotoğraf silinmiş` : ''].filter(Boolean).join(', ');
@@ -865,7 +1043,224 @@
       setStatus('⚠ ' + e.message);
     } finally {
       aiRunning = false;
+      scheduleSync(1000);
       render();
+    }
+  }
+
+  // ----- GitHub ile ortak veri -----
+  // Özel veri reposunda herkesin ilanları kendi klasöründe durur: ilanlar/<kullanıcı>/<dosya>.json
+  // Script sadece kendi klasörüne yazar, başkalarınınkini sadece okur. Aynı kullanıcı adını giren
+  // bilgisayarlar aynı klasörü paylaşır; aynı ilanın iki kopyası mergeSame ile birleştirilir.
+  // Token yalnızca bu tarayıcıda (ghToken) durur; ayar dosyasına ve veri dışa aktarımına girmez.
+  const DEFAULT_SHARE = { repo: 'registerkayitey-sudo/sahibinden-asistan-veri', branch: 'main', user: '', include: [], auto: true };
+  const SYNC_DIR = 'ilanlar';
+  const USER_RE = /^[a-z0-9][a-z0-9-]{1,29}$/;
+  const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+  const loadShare = () => ({ ...DEFAULT_SHARE, ...GM_getValue('share', {}) });
+  const saveShare = (s) => GM_setValue('share', s);
+  const getToken = () => GM_getValue('ghToken', '');
+  const loadSyncMeta = () => ({ own: {}, others: {}, users: {}, at: 0, error: null, last: null, ...GM_getValue('syncMeta', {}) });
+  const saveSyncMeta = (m) => GM_setValue('syncMeta', m);
+  const fileId = (id) => String(id).replace(/[^A-Za-z0-9_-]/g, '_');
+  const syncReady = (s = loadShare()) => !!getToken() && USER_RE.test(s.user) && REPO_RE.test(s.repo);
+
+  async function gh(method, path, body) {
+    const r = await gmRequest({
+      method,
+      url: 'https://api.github.com' + path,
+      headers: {
+        Authorization: 'Bearer ' + getToken(),
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      data: body ? JSON.stringify(body) : undefined,
+      timeout: 60000,
+    });
+    let j = null;
+    try {
+      j = r.responseText ? JSON.parse(r.responseText) : null;
+    } catch (e) {
+      // gövde JSON değil
+    }
+    if (r.status >= 200 && r.status < 300) return j;
+    const msg = (j && j.message) || '';
+    const e = new Error(
+      r.status === 401 ? 'GitHub token geçersiz ya da süresi dolmuş. Paylaşım sekmesinden yenisini gir.'
+        : r.status === 403 && /rate limit/i.test(msg) ? 'GitHub istek sınırı doldu, bir saat içinde kendiliğinden açılır.'
+        : r.status === 403 ? 'Token bu repoya yazamıyor. Token ayarında "Contents: Read and write" izni olmalı.'
+        : r.status === 404 ? 'Veri reposu bulunamadı ya da token bu repoya erişemiyor.'
+        : r.status === 409 ? 'Veri reposu boş. GitHub\'da içinde en az bir dosya (README) olmalı.'
+        : `GitHub hatası ${r.status}: ${msg.slice(0, 150)}`
+    );
+    e.status = r.status;
+    throw e;
+  }
+
+  async function fetchBlobJSON(repo, sha) {
+    const b = await gh('GET', `/repos/${repo}/git/blobs/${sha}`);
+    const bytes = Uint8Array.from(atob(b.content.replace(/\s/g, '')), (ch) => ch.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+
+  // Git'in dosya kimliği: sha1("blob <bayt>\0<içerik>"). GitHub'daki dosyayla aynı mı, indirmeden anlarız.
+  async function gitBlobSha(text) {
+    const body = new TextEncoder().encode(text);
+    const head = new TextEncoder().encode(`blob ${body.length}\0`);
+    const all = new Uint8Array(head.length + body.length);
+    all.set(head);
+    all.set(body, head.length);
+    const h = await crypto.subtle.digest('SHA-1', all);
+    return [...new Uint8Array(h)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Aynı anda en fazla n istek
+  async function pool(items, n, fn) {
+    let i = 0;
+    const worker = async () => {
+      while (i < items.length) await fn(items[i++]);
+    };
+    await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  }
+
+  let syncBusy = false;
+  let syncAgain = false;
+  let syncTimer = null;
+
+  function scheduleSync(ms = 4000) {
+    const s = loadShare();
+    if (!s.auto || !syncReady(s)) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => syncNow().then(afterSync, () => afterSync(null)), ms);
+  }
+
+  function syncLabel() {
+    if (!syncReady()) return '';
+    if (syncBusy) return '☁ eşitleniyor…';
+    const m = loadSyncMeta();
+    if (m.error) return '☁ ⚠ eşitlenemedi';
+    if (!m.at) return '☁ henüz eşitlenmedi';
+    const min = Math.round((Date.now() - m.at) / 60000);
+    return '☁ ' + (min < 1 ? 'az önce' : min < 60 ? `${min} dk önce` : new Date(m.at).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })) + ' eşitlendi';
+  }
+
+  function showSync(text) {
+    const el = root && root.querySelector('[data-sync]');
+    if (el) el.textContent = text;
+  }
+
+  function afterSync(res) {
+    showSync(syncLabel());
+    // Yeni ilan geldiyse listeyi tazele; ayar ve paylaşım sekmelerinde yazdıklarını silmemek için dokunma
+    if (res && (res.pulledOwn || res.pulledOthers) && state.open && (state.tab === 'sira' || state.tab === 'analiz')) render();
+  }
+
+  async function syncNow(onStep = (m) => showSync('☁ ' + m)) {
+    const s = loadShare();
+    if (!syncReady(s)) throw new Error('Paylaşım ayarları eksik: veri reposu, kullanıcı adı ve token gerekli.');
+    if (syncBusy) {
+      syncAgain = true;
+      return null;
+    }
+    syncBusy = true;
+    const meta = loadSyncMeta();
+    const res = { pulledOwn: 0, pulledOthers: 0, pushed: 0 };
+    try {
+      for (let attempt = 1; ; attempt++) {
+        onStep('liste alınıyor…');
+        const head = (await gh('GET', `/repos/${s.repo}/git/ref/heads/${s.branch}`)).object.sha;
+        const commit = await gh('GET', `/repos/${s.repo}/git/commits/${head}`);
+        const tree = await gh('GET', `/repos/${s.repo}/git/trees/${commit.tree.sha}?recursive=1`);
+        if (tree.truncated) throw new Error('Veri reposu GitHub\'ın tek seferde listeleyebileceğinden büyük.');
+        const remote = {}; // kullanıcı -> dosya -> sha
+        for (const e of tree.tree || []) {
+          const m = e.type === 'blob' && e.path.match(/^ilanlar\/([a-z0-9][a-z0-9-]*)\/([A-Za-z0-9_-]+)\.json$/);
+          if (m) (remote[m[1]] = remote[m[1]] || {})[m[2]] = e.sha;
+        }
+        meta.users = Object.fromEntries(Object.entries(remote).map(([u, f]) => [u, Object.keys(f).length]));
+
+        // 1) Kendi klasörün: başka bilgisayarında değişenleri al, buradakiyle birleştir
+        const mine = remote[s.user] || {};
+        const localFiles = new Set(Object.values(loadListings()).map((l) => fileId(l.id)));
+        const toPull = Object.entries(mine).filter(([f, sha]) => meta.own[f] !== sha || !localFiles.has(f));
+        let done = 0;
+        await pool(toPull, 6, async ([f, sha]) => {
+          const r = await fetchBlobJSON(s.repo, sha);
+          putListing(mergeSame(getListing(r.id), r));
+          meta.own[f] = sha;
+          res.pulledOwn++;
+          onStep(`kendi ilanların alınıyor ${++done}/${toPull.length}`);
+        });
+
+        // 2) Kendi klasörüne gidecekler: içeriği GitHub'dakinden farklı olan ilanlar
+        const entries = [];
+        const pending = {};
+        for (const l of Object.values(loadListings())) {
+          const f = fileId(l.id);
+          const text = stableStringify(l);
+          const sha = await gitBlobSha(text);
+          if (sha === mine[f]) {
+            meta.own[f] = sha;
+            continue;
+          }
+          entries.push({ path: `${SYNC_DIR}/${s.user}/${f}.json`, mode: '100644', type: 'blob', content: text });
+          pending[f] = sha;
+        }
+
+        // 3) Dahil ettiğin kişiler: sadece değişen dosyaları indir; artık dahil olmayanların önbelleğini sil
+        for (const u of Object.keys(meta.others)) {
+          if (s.include.includes(u) && remote[u]) continue;
+          for (const k of otherKeys(u)) GM_deleteValue(k);
+          delete meta.others[u];
+        }
+        for (const u of s.include) {
+          if (u === s.user || !remote[u]) continue;
+          const known = (meta.others[u] = meta.others[u] || {});
+          const need = Object.entries(remote[u]).filter(([f, sha]) => known[f] !== sha);
+          done = 0;
+          await pool(need, 6, async ([f, sha]) => {
+            GM_setValue(`${OTHER}${u}:${f}`, await fetchBlobJSON(s.repo, sha));
+            known[f] = sha;
+            res.pulledOthers++;
+            onStep(`${u} ilanları alınıyor ${++done}/${need.length}`);
+          });
+          for (const f of Object.keys(known)) {
+            if (remote[u][f]) continue;
+            GM_deleteValue(`${OTHER}${u}:${f}`);
+            delete known[f];
+          }
+        }
+        saveSyncMeta(meta);
+        if (!entries.length) break;
+
+        // 4) Hepsi tek commit. Bu arada başka bir bilgisayar gönderdiyse (422) baştan al ve tekrar dene.
+        onStep(`${entries.length} ilan gönderiliyor…`);
+        const nt = await gh('POST', `/repos/${s.repo}/git/trees`, { base_tree: commit.tree.sha, tree: entries });
+        const nc = await gh('POST', `/repos/${s.repo}/git/commits`, { message: `${s.user}: ${entries.length} ilan güncellendi`, tree: nt.sha, parents: [head] });
+        try {
+          await gh('PATCH', `/repos/${s.repo}/git/refs/heads/${s.branch}`, { sha: nc.sha, force: false });
+        } catch (e) {
+          if (e.status === 422 && attempt < 4) continue;
+          throw e;
+        }
+        Object.assign(meta.own, pending);
+        res.pushed = entries.length;
+        break;
+      }
+      Object.assign(meta, { at: Date.now(), error: null, last: res });
+      saveSyncMeta(meta);
+      return res;
+    } catch (e) {
+      meta.error = e.message;
+      saveSyncMeta(meta);
+      throw e;
+    } finally {
+      syncBusy = false;
+      if (syncAgain) {
+        syncAgain = false;
+        scheduleSync(1000);
+      }
     }
   }
 
@@ -918,6 +1313,12 @@
     .mini.on.no { background: var(--bad); border-color: var(--bad); color: #fff; }
     .ask { margin-top: 5px; display: flex; flex-direction: column; gap: 4px; }
     .ask > div { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px; }
+    .form { display: grid; gap: 8px; max-width: 560px; }
+    .form label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+    .form input:not([type=checkbox]) { font-size: 13px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+    label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg); margin: 4px 0; }
+    .hint { font-size: 11px; margin-top: -4px; }
+    .tab.sync { color: var(--muted); font-size: 12px; }
     textarea { width: 100%; min-height: 55vh; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--bg2);
       color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
     .chart text { fill: var(--muted); font-size: 11px; }
@@ -963,13 +1364,16 @@
     return `<span class="${cls}" title="Tahmini piyasa fiyatı: ${fmtTL(r.market.pred)}">${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%</span>`;
   }
 
-  // "Var / Yok" düğme çifti; cur: true, false ya da undefined (henüz karar yok)
-  function manualBtns(id, key, yes, no, cur) {
+  // "Var / Yok" düğme çifti; cur: true, false ya da undefined (henüz karar yok).
+  // Karar başkasından geliyorsa "geri al" çıkmaz: onun kararını silemezsin, Var/Yok ile kendi kararını verirsin.
+  function manualBtns(id, key, yes, no, cur, canUndo = cur !== undefined) {
     const b = (v, txt, cls) =>
       `<button class="mini${cur === v ? ' on ' + cls : ''}" data-manual="${esc(id)}" data-key="${esc(key)}" data-val="${v ? '1' : '0'}">${esc(txt)}</button>`;
-    const undo = cur === undefined ? '' : `<button class="mini" data-manual="${esc(id)}" data-key="${esc(key)}" data-val="">geri al</button>`;
+    const undo = canUndo ? `<button class="mini" data-manual="${esc(id)}" data-key="${esc(key)}" data-val="">geri al</button>` : '';
     return `<span class="mbtns">${b(true, yes, 'yes')}${b(false, no, 'no')}${undo}</span>`;
   }
+
+  const byTag = (by) => (by ? ` <span class="muted">(${esc(by)})</span>` : '');
 
   // Doğrulanamayan şartlar: ilan satırının altında, ayrıntıları açmadan cevaplanabilsin
   function askBlock(r) {
@@ -985,15 +1389,15 @@
     const man = manualOf(l);
     const lines = r.score.lines
       .map((x) => {
-        const btns = x.key && x.askable ? manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key]) : '';
+        const btns = x.key && x.askable ? manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key], man[x.key] !== undefined && !x.manualBy) : '';
         return `<li>${esc(x.name)}: <b>${Math.round(x.points)}/${x.max}</b> <span class="muted">${esc(x.via || '')}${x.pending ? ' ⏳' : ''}</span>${btns}</li>`;
       })
       .join('');
     const nonOrig = l.parts ? Object.entries(l.parts).filter(([, st]) => st !== 'orijinal') : [];
     let html = `<div class="detail"><b>Puan dökümü</b><ul>${lines}</ul>`;
     if (r.hard.decided.length) {
-      html += `<b>Senin kontrollerin</b><ul>${r.hard.decided
-        .map((d) => `<li class="${d.ok ? 'good' : 'bad'}">${esc(d.label)} → <b>${esc(d.ok ? d.yes : d.no)}</b>${manualBtns(l.id, d.key, d.yes, d.no, d.ok)}</li>`)
+      html += `<b>Elle kontroller</b><ul>${r.hard.decided
+        .map((d) => `<li class="${d.ok ? 'good' : 'bad'}">${esc(d.label)} → <b>${esc(d.ok ? d.yes : d.no)}</b>${byTag(d.by)}${manualBtns(l.id, d.key, d.yes, d.no, d.ok, !d.by)}</li>`)
         .join('')}</ul>`;
     }
     // Cevaplanmamış sorular ilan satırının altında duruyor (askBlock), burada tekrar edilmiyor.
@@ -1008,7 +1412,7 @@
     }
     if (r.flags.length) html += `<b style="display:block;margin-top:6px">Uyarılar</b><ul>${r.flags.map((f) => `<li class="warn">${esc(f)}</li>`).join('')}</ul>`;
     if (t && !t.error) {
-      html += `<b style="display:block;margin-top:6px">Yerel AI</b><div>${esc(t.ozet)}</div>`;
+      html += `<b style="display:block;margin-top:6px">Yerel AI</b>${byTag(l._aiBy && l._aiBy.text)}<div>${esc(t.ozet)}</div>`;
       if (t.artilar.length) html += `<div class="good">+ ${t.artilar.map(esc).join(' · ')}</div>`;
       if (t.eksiler.length) html += `<div class="bad">− ${t.eksiler.map(esc).join(' · ')}</div>`;
       if (t.uyarilar.length) html += `<ul>${t.uyarilar.map((u) => `<li class="warn">${esc(u)}</li>`).join('')}</ul>`;
@@ -1025,7 +1429,9 @@
         const tr = r.score.tramer.amount;
         return `<tr>
           <td class="num">${startIdx + i + 1}</td>
-          <td><a href="${esc(r.l.url)}" target="_blank">${esc(r.l.title)}</a>${r.flags.length ? ` <span class="warn" title="${esc(r.flags.join('\n'))}">⚠ ${r.flags.length}</span>` : ''}
+          <td><a href="${esc(r.l.url)}" target="_blank">${esc(r.l.title)}</a>${r.flags.length ? ` <span class="warn" title="${esc(r.flags.join('\n'))}">⚠ ${r.flags.length}</span>` : ''}${
+            r.l._owner ? ` <span class="muted" title="Bu ilan sende yok, dahil ettiğin kişiden geliyor. Bir şeyini değiştirirsen sende kopyası oluşur.">· kaynak: ${esc(r.l._owner)}</span>`
+            : r.l.copiedFrom ? ` <span class="muted">· kopya (kaynak: ${esc(r.l.copiedFrom)})</span>` : ''}
             ${askBlock(r)}
             <details ${state.openRows.has(r.l.id) ? 'open' : ''}><summary data-row="${esc(r.l.id)}">ayrıntılar</summary>${detailBlock(r)}</details></td>
           <td class="num">${fmtTL(r.l.price)}</td>
@@ -1040,13 +1446,13 @@
   }
 
   function renderRanking(result) {
-    const count = countListings();
+    const fromOthers = result.all.filter((r) => r.l._owner).length;
     let html = `<div class="bar">
       <button class="primary" data-action="ai" ${aiRunning ? 'disabled' : ''}>Yerel AI analizini çalıştır</button>
       ${aiRunning ? '<button data-action="ai-stop">Durdur</button>' : ''}
       <button data-action="claude" ${result.passed.length + result.unsure.length ? '' : 'disabled'}>Claude için kopyala</button>
       <span class="muted" data-status>${esc(state.status)}</span></div>`;
-    html += `<p class="muted">${count} ilan kayıtlı · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi</p>`;
+    html += `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi</p>`;
     html += `<h2>En iyi ${MAX_TOP}</h2>` + table(result.passed.slice(0, MAX_TOP), 0);
     if (result.unsure.length) {
       html += `<h2>Kontrol edilecekler <span class="muted">(ilandan doğrulanamayan şartlar — ilana bakıp kendin işaretle)</span></h2>` + table(result.unsure.slice(0, MAX_TOP), 0);
@@ -1055,7 +1461,7 @@
       html += `<details><summary>Elenen ${result.rejected.length} ilan</summary><ul>${result.rejected
         .map((r) => `<li><a href="${esc(r.l.url)}" target="_blank">${esc(r.l.title)}</a> <span class="bad">${esc(r.hard.fails.join(', '))}</span>${r.hard.decided
           .filter((d) => !d.ok)
-          .map((d) => manualBtns(r.l.id, d.key, d.yes, d.no, false))
+          .map((d) => manualBtns(r.l.id, d.key, d.yes, d.no, false, !d.by))
           .join('')}</li>`)
         .join('')}</ul></details>`;
     }
@@ -1136,7 +1542,48 @@
         <button data-action="data-clear">Tüm ilanları sil</button>
         <span class="muted" data-status>${esc(state.status)}</span>
       </div>
-      <p class="muted">Veriler yalnızca bu tarayıcıda, Tampermonkey'in deposunda durur. Hiçbir sunucuya gönderilmez; yerel AI açıksa sadece kendi bilgisayarındaki Ollama'ya gider.</p>`;
+      <p class="muted">Veriler bu tarayıcıda, Tampermonkey'in deposunda durur. Paylaşım sekmesinde GitHub bağlantısı kurduysan kendi ilanların özel veri reposuna da kaydedilir; kurmadıysan hiçbir yere gönderilmez. Yerel AI sadece kendi bilgisayarındaki Ollama'ya gider.</p>`;
+  }
+
+  // checked: ekranda o an işaretli olanlar (liste yenilenirken kullanıcının tıkladıkları kaybolmasın)
+  function includeList(checked) {
+    const s = loadShare();
+    const others = Object.entries(loadSyncMeta().users || {}).filter(([u]) => u !== s.user);
+    const on = checked || s.include;
+    return others.length
+      ? others.map(([u, n]) => `<label class="check"><input type="checkbox" data-include="${esc(u)}" ${on.includes(u) ? 'checked' : ''}> ${esc(u)} <span class="muted">(${n} ilan)</span></label>`).join('')
+      : `<p class="muted">${syncReady() ? 'Veri reposunda henüz senden başka kimse yok.' : 'Eşitlemeden sonra veri reposundaki diğer kullanıcılar burada listelenir.'}</p>`;
+  }
+
+  function refreshIncludes() {
+    const el = root && root.querySelector('[data-includes]');
+    if (!el) return;
+    const checked = [...el.querySelectorAll('[data-include]')].filter((x) => x.checked).map((x) => x.dataset.include);
+    el.innerHTML = includeList(el.querySelector('[data-include]') ? checked : null);
+  }
+
+  function renderShare() {
+    const s = loadShare();
+    const m = loadSyncMeta();
+    const hasToken = !!getToken();
+    const last = m.last ? `son seferde ${m.last.pushed} ilan gönderildi, ${m.last.pulledOwn + m.last.pulledOthers} ilan alındı` : '';
+    return `<p class="muted">İlanların ve analizlerin GitHub'daki özel veri reposunda, kendi klasöründe saklanır. Aynı kullanıcı adını girdiğin bütün bilgisayarlar aynı veriyi görür.
+      Başkalarının klasörüne hiç yazılmaz: onların verisini dahil edersen sende görünür, bir şeyini değiştirirsen değişiklik senin klasörüne kendi kopyan olarak kaydedilir.</p>
+      <div class="form">
+        <label>Veri reposu <input data-share="repo" value="${esc(s.repo)}" spellcheck="false"></label>
+        <label>Kullanıcı adın <input data-share="user" value="${esc(s.user)}" placeholder="ör. efe" spellcheck="false" autocomplete="off"></label>
+        <span class="muted hint">Küçük harf, rakam ve tire. Kendi bilgisayarlarının hepsinde aynı adı kullan, arkadaşların farklı ad seçsin.</span>
+        <label>GitHub token <input data-share="token" type="password" placeholder="${hasToken ? 'Kayıtlı. Değiştirmek için yenisini yapıştır.' : 'github_pat_…'}" autocomplete="off" spellcheck="false"></label>
+        <label class="check"><input type="checkbox" data-share="auto" ${s.auto ? 'checked' : ''}> Otomatik eşitle (ilan kaydedince, karar verince, AI analizi bitince)</label>
+      </div>
+      <h2>Kimlerin verisini dahil edeyim?</h2>
+      <div data-includes>${includeList(null)}</div>
+      <div class="bar" style="margin-top:12px">
+        <button class="primary" data-action="share-save">Kaydet ve eşitle</button>
+        ${hasToken ? '<button data-action="token-clear">Token\'ı bu tarayıcıdan sil</button>' : ''}
+        <span class="muted" data-status>${esc(state.status)}</span>
+      </div>
+      <p class="muted">${esc(syncLabel())}${last ? ' · ' + esc(last) : ''}${m.error ? `<br><span class="bad">${esc(m.error)}</span>` : ''}</p>`;
   }
 
   function render() {
@@ -1154,12 +1601,14 @@
     let panel = '';
     if (state.open) {
       const cfg = loadConfig();
-      const result = computeRows(loadListings(), cfg);
-      const tabs = [['sira', 'Sıralama'], ['analiz', 'Piyasa analizi'], ['ayar', 'Ayarlar'], ['veri', 'Veri']];
-      const body = state.tab === 'sira' ? renderRanking(result) : state.tab === 'analiz' ? renderAnalysis(result) : state.tab === 'ayar' ? renderSettings() : renderData();
+      const result = computeRows(loadAllListings(), cfg);
+      const tabs = [['sira', 'Sıralama'], ['analiz', 'Piyasa analizi'], ['ayar', 'Ayarlar'], ['veri', 'Veri'], ['paylasim', 'Paylaşım']];
+      const views = { sira: () => renderRanking(result), analiz: () => renderAnalysis(result), ayar: renderSettings, veri: renderData, paylasim: renderShare };
+      const body = (views[state.tab] || views.sira)();
+      const sl = syncLabel();
       panel = `<div class="panel"><div class="head"><h1>Araç Asistanı</h1>${tabs
         .map(([k, n]) => `<button class="tab ${state.tab === k ? 'on' : ''}" data-tab="${k}">${n}</button>`)
-        .join('')}<span class="spacer"></span><button data-action="toggle">Kapat</button></div><div class="body">${body}</div></div>`;
+        .join('')}<span class="spacer"></span>${sl ? `<button class="tab sync" data-action="sync-now" data-sync title="Şimdi eşitle">${esc(sl)}</button>` : ''}<button data-action="toggle">Kapat</button></div><div class="body">${body}</div></div>`;
     }
     const scroll = root.querySelector('.body')?.scrollTop || 0;
     root.innerHTML = `<style>${CSS}</style><div class="wrap">${panel}${fab}</div>`;
@@ -1214,7 +1663,15 @@
     if (tabBtn) {
       state.tab = tabBtn.dataset.tab;
       state.status = '';
-      return render();
+      render();
+      // Paylaşım sekmesinde kişi listesi güncel olsun (yazdıklarına dokunmadan sadece liste yenilenir)
+      if (state.tab === 'paylasim' && syncReady()) {
+        syncNow().then(
+          (r) => { refreshIncludes(); afterSync(r); },
+          () => afterSync(null)
+        );
+      }
+      return;
     }
     // Ayrıntılar açık/kapalı durumu render sonrası korunsun (açma işini tarayıcı yapar)
     const sum = e.target.closest('summary[data-row]');
@@ -1228,20 +1685,27 @@
     // Elle doğrulama: Var / Yok / geri al
     const mBtn = e.target.closest('[data-manual]');
     if (mBtn) {
-      const l = getListing(mBtn.dataset.manual);
-      if (!l) return;
+      const id = mBtn.dataset.manual;
+      let l = getListing(id);
+      let copied = false;
+      if (!l) {
+        // Dahil ettiğin birinin ilanı: onunkine dokunmadan sende kopyası oluşur
+        const view = loadAllListings()[id];
+        if (!view) return;
+        l = ownCopyOf(view);
+        copied = true;
+      }
       const key = mBtn.dataset.key;
       const raw = mBtn.dataset.val;
-      const man = { ...manualOf(l) };
-      if (raw === '') delete man[key];
-      else man[key] = raw === '1';
-      l.manual = man;
+      l.manual = { ...(l.manual || {}), [key]: { v: raw === '' ? null : raw === '1', at: Date.now() } };
       putListing(l);
+      scheduleSync();
       render();
-      if (raw === '') return toast('Kontrol geri alındı.');
-      const hard = evalHard(l, loadConfig());
+      const note = copied ? ` · ilanın kopyası senin verine eklendi (kaynak: ${l.copiedFrom})` : '';
+      if (raw === '') return toast('Kontrol geri alındı.' + note);
+      const hard = evalHard(loadAllListings()[id] || l, loadConfig());
       const where = hard.status === 'gecti' ? '✓ artık filtreleri geçiyor' : hard.status === 'belirsiz' ? '? başka doğrulanamayan şart var' : '✗ elendi';
-      return toast(`Kaydedildi · ${where}`);
+      return toast(`Kaydedildi · ${where}${note}`);
     }
 
     const btn = e.target.closest('[data-action]');
@@ -1249,10 +1713,57 @@
     const action = btn.dataset.action;
     if (action === 'toggle') {
       state.open = !state.open;
+      if (state.open && Date.now() - (loadSyncMeta().at || 0) > 2 * 60000) scheduleSync(300);
+      return render();
+    }
+    if (action === 'sync-now') {
+      showSync('☁ eşitleniyor…');
+      try {
+        afterSync(await syncNow());
+      } catch (err) {
+        afterSync(null);
+        toast('⚠ ' + err.message, 6000);
+      }
+      return;
+    }
+    if (action === 'share-save') {
+      const field = (k) => root.querySelector(`[data-share="${k}"]`);
+      const user = field('user').value.trim().toLowerCase();
+      const repo = field('repo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, '');
+      if (!USER_RE.test(user)) return setStatus('⚠ Kullanıcı adı 2–30 karakter olmalı: küçük harf, rakam ve tire (Türkçe harf yok).');
+      if (!REPO_RE.test(repo)) return setStatus('⚠ Veri reposu "hesap/repo-adı" biçiminde olmalı.');
+      const prev = loadShare();
+      const include = [...root.querySelectorAll('[data-include]')].filter((x) => x.checked).map((x) => x.dataset.include);
+      const token = field('token').value.trim();
+      if (token) GM_setValue('ghToken', token);
+      if (prev.user !== user || prev.repo !== repo) {
+        // Başka klasör ya da repo: eşitleme kayıtları baştan, başkalarından gelen önbellek silinir
+        for (const k of otherKeys()) GM_deleteValue(k);
+        saveSyncMeta({});
+      }
+      saveShare({ ...prev, user, repo, include, auto: field('auto').checked });
+      if (!getToken()) {
+        state.status = 'Kaydedildi. Eşitleme için token gerekli.';
+        return render();
+      }
+      state.status = 'Kaydedildi, eşitleniyor…';
+      render();
+      try {
+        const r = await syncNow((m) => setStatus(m));
+        state.status = r ? `Eşitlendi ✓ ${r.pushed} ilan gönderildi, ${r.pulledOwn + r.pulledOthers} ilan alındı.` : 'Eşitleme zaten sürüyordu, bitince tekrar edilecek.';
+      } catch (err) {
+        state.status = '⚠ ' + err.message;
+      }
+      return render();
+    }
+    if (action === 'token-clear') {
+      if (!confirm('GitHub token bu tarayıcıdan silinsin mi? Eşitleme durur, GitHub\'daki verilere dokunulmaz.')) return;
+      GM_deleteValue('ghToken');
+      state.status = 'Token silindi.';
       return render();
     }
     if (action === 'enqueue') {
-      const saved = loadListings();
+      const saved = loadAllListings(); // sen ya da dahil ettiğin biri zaten gezdiyse tekrar kuyruğa alma
       const savedUrls = new Set(Object.values(saved).map((l) => l.url));
       const q = loadQueue();
       const add = collectSearchLinks().filter((u) => !savedUrls.has(u) && !q.includes(u));
@@ -1274,7 +1785,7 @@
       return setStatus('Durduruluyor, mevcut fotoğraf bitince duracak…');
     }
     if (action === 'claude') {
-      const text = claudePrompt(computeRows(loadListings(), loadConfig()), loadConfig());
+      const text = claudePrompt(computeRows(loadAllListings(), loadConfig()), loadConfig());
       GM_setClipboard(text, 'text');
       return setStatus(`Kopyalandı (~${Math.round(text.length / 3.5 / 1000)}k token). claude.ai'da yeni bir sohbete yapıştır.`);
     }
@@ -1313,8 +1824,9 @@
       if (!text) return;
       try {
         const incoming = JSON.parse(text);
-        for (const l of Object.values(incoming)) if (l && l.id && !getListing(l.id)) putListing(l);
+        for (const l of Object.values(incoming)) if (l && l.id) putListing(mergeSame(getListing(l.id), l));
         state.status = `${Object.keys(incoming).length} ilan birleştirildi ✓`;
+        scheduleSync();
         render();
       } catch (err) {
         setStatus('⚠ Dosya okunamadı: ' + err.message);
@@ -1326,7 +1838,11 @@
       return render();
     }
     if (action === 'data-clear') {
-      if (!confirm('Kayıtlı tüm ilanlar ve AI sonuçları silinsin mi? Bu geri alınamaz.')) return;
+      const synced = syncReady();
+      const msg = synced
+        ? 'Bu tarayıcıdaki ilanlar ve AI sonuçları silinsin mi? GitHub\'daki kopyalara dokunulmaz; otomatik eşitleme açıksa bir sonraki eşitlemede geri gelirler.'
+        : 'Kayıtlı tüm ilanlar ve AI sonuçları silinsin mi? Bu geri alınamaz.';
+      if (!confirm(msg)) return;
       clearListings();
       return render();
     }
@@ -1344,14 +1860,18 @@
       const l = saveCurrentListing();
       if (l) {
         const cfg = loadConfig();
-        const hard = evalHard(l, cfg);
-        const sc = scoreListing(l, cfg);
+        const view = loadAllListings()[l.id] || l; // dahil ettiğin kişilerin kararları da sayılsın
+        const hard = evalHard(view, cfg);
+        const sc = scoreListing(view, cfg);
         const label = hard.status === 'gecti' ? '✓ filtreleri geçti' : hard.status === 'belirsiz' ? '? doğrulanamadı' : '✗ elendi: ' + hard.fails.join(', ');
         render();
         toast(`Kaydedildi · ${Math.round(sc.total)}/${sc.max} puan · ${label}`);
+        scheduleSync(3000);
       } else {
         toast('İlan bilgileri okunamadı. Sayfa yapısı beklenenden farklı olabilir.');
       }
+    } else if (Date.now() - (loadSyncMeta().at || 0) > 10 * 60000) {
+      scheduleSync(5000);
     }
   }
 
