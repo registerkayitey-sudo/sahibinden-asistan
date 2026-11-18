@@ -1,0 +1,122 @@
+{
+  "ollama": {
+    "enabled": true,
+    "url": "http://localhost:11434",
+    "model": "gemma4:12b",
+    "maxImages": 10
+  },
+  "hardFilters": {
+    "maxKm": 125000,
+    "minYear": 2020,
+    "maxPrice": 2400000,
+    "originalParts": [
+      "Tavan",
+      "Motor Kaputu"
+    ],
+    "requiredFeatures": [
+      {
+        "name": "Hayalet gösterge (HUD)",
+        "keywords": [
+          "hayalet",
+          "head-up",
+          "head up",
+          "headup",
+          "hud",
+          "6u3",
+          "executive paket",
+          "executive package"
+        ]
+      }
+    ]
+  },
+  "scoring": {
+    "km": {
+      "points": 40,
+      "bestKm": 20000,
+      "worstKm": 125000
+    },
+    "tramer": {
+      "noRecordPoints": 20,
+      "tiers": [
+        {
+          "below": 100000,
+          "points": 15
+        },
+        {
+          "below": 300000,
+          "points": 8
+        }
+      ]
+    },
+    "criteria": [
+      {
+        "id": "msport",
+        "name": "M Sport / First Edition",
+        "points": 30,
+        "keywords": [
+          "m sport",
+          "msport",
+          "m-sport",
+          "m sport paket",
+          "first edition"
+        ]
+      },
+      {
+        "id": "kirmizi",
+        "name": "Kırmızı koltuk",
+        "points": 30,
+        "keywords": [
+          "kırmızı koltuk",
+          "kırmızı deri",
+          "kırmızı döşeme",
+          "kırmızı iç",
+          "fiona red",
+          "tacora red",
+          "mugello red",
+          "coral red"
+        ],
+        "vision": "Are the car seats red (red leather or red upholstery)?"
+      },
+      {
+        "id": "shadow",
+        "name": "Shadow paket",
+        "points": 20,
+        "keywords": [
+          "shadow paket",
+          "shadow edition",
+          "shadow package"
+        ],
+        "allOf": [
+          "jant",
+          "izgara"
+        ]
+      },
+      {
+        "id": "jant",
+        "name": "554M Y-Spoke jant",
+        "points": 10,
+        "keywords": [
+          "554m",
+          "554 m",
+          "y-spoke",
+          "y spoke",
+          "y kollu"
+        ],
+        "vision": "Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?"
+      },
+      {
+        "id": "izgara",
+        "name": "Siyah ızgara (7M9)",
+        "points": 0,
+        "keywords": [
+          "7m9",
+          "siyah ızgara",
+          "siyah böbrek",
+          "parlak siyah ızgara",
+          "shadow line"
+        ],
+        "vision": "Is the BMW kidney grille frame black (not chrome)?"
+      }
+    ]
+  }
+}
