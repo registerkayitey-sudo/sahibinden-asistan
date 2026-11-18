@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.5.0
+// @version      0.5.1
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -1065,16 +1065,21 @@
   const fileId = (id) => String(id).replace(/[^A-Za-z0-9_-]/g, '_');
   const syncReady = (s = loadShare()) => !!getToken() && USER_RE.test(s.user) && REPO_RE.test(s.repo);
 
-  async function gh(method, path, body) {
+  // fresh: değişebilen bir şeyi (dalın son commit'i) soruyorsak tarayıcı önbelleğini atla.
+  // GitHub bu yanıtları "max-age=60" ile gönderiyor; önbellekten gelen eski commit'in üstüne
+  // gönderim yapılırsa GitHub 422 (fast forward değil) ile reddediyor.
+  async function gh(method, path, body, fresh = false) {
     const r = await gmRequest({
       method,
-      url: 'https://api.github.com' + path,
+      url: 'https://api.github.com' + path + (fresh ? `${path.includes('?') ? '&' : '?'}_=${Date.now()}` : ''),
       headers: {
         Authorization: 'Bearer ' + getToken(),
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(fresh ? { 'Cache-Control': 'no-cache' } : {}),
       },
+      nocache: fresh,
       data: body ? JSON.stringify(body) : undefined,
       timeout: 60000,
     });
@@ -1169,7 +1174,7 @@
     try {
       for (let attempt = 1; ; attempt++) {
         onStep('liste alınıyor…');
-        const head = (await gh('GET', `/repos/${s.repo}/git/ref/heads/${s.branch}`)).object.sha;
+        const head = (await gh('GET', `/repos/${s.repo}/git/ref/heads/${s.branch}`, null, true)).object.sha;
         const commit = await gh('GET', `/repos/${s.repo}/git/commits/${head}`);
         const tree = await gh('GET', `/repos/${s.repo}/git/trees/${commit.tree.sha}?recursive=1`);
         if (tree.truncated) throw new Error('Veri reposu GitHub\'ın tek seferde listeleyebileceğinden büyük.');
@@ -1241,8 +1246,15 @@
         try {
           await gh('PATCH', `/repos/${s.repo}/git/refs/heads/${s.branch}`, { sha: nc.sha, force: false });
         } catch (e) {
-          if (e.status === 422 && attempt < 4) continue;
-          throw e;
+          if (e.status !== 422) throw e;
+          if (attempt < 4) {
+            await new Promise((ok) => setTimeout(ok, 700 * attempt)); // başka bir bilgisayar aynı anda gönderdi
+            continue;
+          }
+          scheduleSync(20000);
+          throw new Error(s.auto
+            ? 'Başka bir bilgisayar da aynı anda gönderiyor; 20 saniye sonra kendiliğinden tekrar denenecek.'
+            : 'Başka bir bilgisayar da aynı anda gönderiyor; biraz sonra ☁ yazısına tıklayıp tekrar dene.');
         }
         Object.assign(meta.own, pending);
         res.pushed = entries.length;
