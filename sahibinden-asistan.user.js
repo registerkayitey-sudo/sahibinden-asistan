@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.5.1
+// @version      0.6.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -39,7 +39,13 @@
       maxPrice: 2400000, // en fazla
       originalParts: ['Tavan', 'Motor Kaputu'],
       requiredFeatures: [
-        { name: 'Hayalet gösterge (HUD)', keywords: ['hayalet', 'head-up', 'head up', 'headup', 'hud', '6u3', 'executive paket', 'executive package'] },
+        {
+          name: 'Hayalet gösterge (HUD)',
+          keywords: ['hayalet', 'head-up', 'head up', 'headup', 'hud', '6u3', 'executive paket', 'executive package'],
+          // Satıcıların HUD dışındaki şeyler (ör. dijital gösterge paneli) için de kullandığı ifadeler:
+          // ilanda sadece bunlar geçiyorsa "var" sayılmaz, sana sorulur.
+          unsureKeywords: ['yarı hayalet', 'hayalet kadran', 'dijital hayalet'],
+        },
       ],
     },
     scoring: {
@@ -240,12 +246,40 @@
       }
     }
 
+    // Olması gereken donanımlar: senin kararın > metinde kesin geçmesi > sor.
+    // feats puan dökümünde gösterilir; metinden "var" denmiş olsa da Var/Yok ile değiştirebilirsin.
     const corpus = corpusOf(l);
+    const feats = [];
     for (const f of h.requiredFeatures || []) {
-      if (!findKeyword(corpus, f.keywords)) ask(`feat:${f.name}`, `${f.name} ilanda geçmiyor`, 'Var', 'Yok', `${f.name}: yok`);
+      const key = `feat:${f.name}`;
+      const hit = findFeature(corpus, f);
+      const label = hit.kw ? `${f.name} (metinde "${hit.kw}" geçiyor)` : hit.unsure ? `${f.name}: metinde sadece "${hit.unsure}" geçiyor` : `${f.name} ilanda geçmiyor`;
+      const d = man[key];
+      if (typeof d === 'boolean') {
+        const by = manualBy(l, key);
+        feats.push({ key, name: f.name, ok: d, by, via: `${by ? by + ' kontrol etti' : 'senin kontrolün'}: ${d ? 'var' : 'yok'}` });
+        ask(key, label, 'Var', 'Yok', `${f.name}: yok`);
+      } else if (hit.kw) {
+        feats.push({ key, name: f.name, ok: true, via: `metin: "${hit.kw}"` });
+      } else {
+        feats.push({ key, name: f.name, ok: null, via: hit.unsure ? `metinde sadece "${hit.unsure}" geçiyor, emin değilim` : 'ilanda geçmiyor' });
+        ask(key, label, 'Var', 'Yok', `${f.name}: yok`);
+      }
     }
     const status = fails.length ? 'elendi' : unknowns.length ? 'belirsiz' : 'gecti';
-    return { status, fails, unknowns, decided };
+    return { status, fails, unknowns, decided, feats };
+  }
+
+  // Donanım metinde geçiyor mu? { kw } kesin, { unsure } sadece belirsiz bir ifadenin içinde (ör. "yarı hayalet"), {} yok
+  function findFeature(corpus, f) {
+    let clean = corpus;
+    for (const u of (f.unsureKeywords || []).map(fold).filter(Boolean)) {
+      clean = clean.replace(new RegExp('(^|[^a-z0-9])' + escapeRe(u) + '(?=$|[^a-z0-9])', 'g'), '$1 ');
+    }
+    const kw = findKeyword(clean, f.keywords);
+    if (kw) return { kw };
+    const unsure = findKeyword(corpus, f.unsureKeywords);
+    return unsure && findKeyword(corpus, f.keywords) ? { unsure } : {};
   }
 
   function evalCriteria(l, cfg) {
@@ -667,13 +701,14 @@
   // Aynı ilan birden çok kişide varsa senin kopyan esas alınır, eksikleri diğerlerinden tamamlanır.
   function loadAllListings() {
     const out = loadListings();
-    const inc = loadShare().include;
-    if (!inc.length) return out;
+    const s = loadShare();
+    const me = personOf(s.user);
+    if (!s.include.length) return out;
     for (const k of otherKeys()) {
-      const user = k.slice(OTHER.length).split(':')[0];
-      if (!inc.includes(user)) continue;
+      const person = personOf(k.slice(OTHER.length).split(':')[0]); // önbellek klasöre göre: diger:ali-laptop:123 → ali
+      if (person === me || !s.include.includes(person)) continue;
       const o = GM_getValue(k, null);
-      if (o && o.id) out[o.id] = combineOther(out[o.id], o, user);
+      if (o && o.id) out[o.id] = combineOther(out[o.id], o, person);
     }
     return out;
   }
@@ -686,10 +721,30 @@
   const loadQueue = () => GM_getValue('queue', []);
   const saveQueue = (x) => GM_setValue('queue', x);
   function loadConfig() {
-    const c = GM_getValue('config', null);
-    return c ? c : JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    const c = GM_getValue('config', null) || JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    // 0.6.0 öncesi kaydedilmiş ayarlarda belirsiz ifade listesi yok: aynı adlı varsayılan donanımdan al
+    for (const f of (c.hardFilters && c.hardFilters.requiredFeatures) || []) {
+      const d = DEFAULT_CONFIG.hardFilters.requiredFeatures.find((x) => x.name === f.name);
+      if (!f.unsureKeywords && d && d.unsureKeywords) f.unsureKeywords = d.unsureKeywords.slice();
+    }
+    return c;
   }
-  const saveConfig = (c) => GM_setValue('config', c);
+  // Ayarlar aynı kişinin bilgisayarları arasında eşitlenir: kim en son kaydettiyse o geçerli
+  function saveConfig(c) {
+    GM_setValue('config', c);
+    GM_setValue('configAt', Date.now());
+    GM_setValue('configBy', loadShare().user || '');
+    scheduleSync();
+  }
+
+  // Başka bilgisayardan gelen ayar: buradaki farklıysa önce yedeklenir (Ayarlar → Önceki ayarları geri yükle)
+  function adoptConfig(rc) {
+    const cur = GM_getValue('config', null);
+    if (cur && stableStringify(cur) !== stableStringify(rc.config)) GM_setValue('configBackup', { config: cur, at: Date.now(), from: rc.by || '' });
+    GM_setValue('config', rc.config);
+    GM_setValue('configAt', rc.at || 0);
+    GM_setValue('configBy', rc.by || '');
+  }
 
   // ----- Sayfa okuma -----
   const isDetailPage = () => /^\/ilan\//.test(location.pathname);
@@ -1055,7 +1110,10 @@
   // Token yalnızca bu tarayıcıda (ghToken) durur; ayar dosyasına ve veri dışa aktarımına girmez.
   const DEFAULT_SHARE = { repo: 'registerkayitey-sudo/sahibinden-asistan-veri', branch: 'main', user: '', include: [], auto: true };
   const SYNC_DIR = 'ilanlar';
-  const USER_RE = /^[a-z0-9][a-z0-9-]{1,29}$/;
+  // Kullanıcı adı "kişi" ya da "kişi-bilgisayar" (efe, efe-windows, efe-mac). Tireden önceki kısım kişidir:
+  // aynı kişinin bütün bilgisayarları aynı klasörü ve aynı ayarları paylaşır, birbirinin üstüne yazabilir.
+  const USER_RE = /^[a-z0-9]{2,20}(-[a-z0-9-]{1,20})?$/;
+  const personOf = (u) => String(u || '').split('-')[0];
   const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
   const loadShare = () => ({ ...DEFAULT_SHARE, ...GM_getValue('share', {}) });
   const saveShare = (s) => GM_setValue('share', s);
@@ -1157,8 +1215,10 @@
 
   function afterSync(res) {
     showSync(syncLabel());
-    // Yeni ilan geldiyse listeyi tazele; ayar ve paylaşım sekmelerinde yazdıklarını silmemek için dokunma
-    if (res && (res.pulledOwn || res.pulledOthers) && state.open && (state.tab === 'sira' || state.tab === 'analiz')) render();
+    // Yeni ilan ya da ayar geldiyse listeyi tazele; ayar ve paylaşım sekmelerinde yazdıklarını silmemek için dokunma
+    if (res && (res.pulledOwn || res.pulledOthers || res.pulledConfig) && state.open && (state.tab === 'sira' || state.tab === 'analiz')) render();
+    // Bildirim yeniden çizimden sonra: render() paneli baştan kurduğu için önce gösterilen bildirim silinirdi
+    if (res && res.pulledConfig) toast(`Ayarlar ${res.pulledConfig} bilgisayarından güncellendi. Öncekiler Ayarlar sekmesinde yedekte.`, 5000);
   }
 
   async function syncNow(onStep = (m) => showSync('☁ ' + m)) {
@@ -1169,8 +1229,14 @@
       return null;
     }
     syncBusy = true;
-    const meta = loadSyncMeta();
-    const res = { pulledOwn: 0, pulledOthers: 0, pushed: 0 };
+    const me = personOf(s.user);
+    let meta = loadSyncMeta();
+    // 0.6.0'dan önce klasör tam kullanıcı adıydı (efe-windows) ve kayıtlar klasörsüz tutuluyordu: baştan başla
+    if (meta.v !== 2 || meta.me !== me) {
+      for (const k of otherKeys()) GM_deleteValue(k);
+      meta = { ...meta, own: {}, others: {}, cfgSha: null, cfgAt: null, v: 2, me };
+    }
+    const res = { pulledOwn: 0, pulledOthers: 0, pushed: 0, pulledConfig: null, pushedConfig: false };
     try {
       for (let attempt = 1; ; attempt++) {
         onStep('liste alınıyor…');
@@ -1178,71 +1244,124 @@
         const commit = await gh('GET', `/repos/${s.repo}/git/commits/${head}`);
         const tree = await gh('GET', `/repos/${s.repo}/git/trees/${commit.tree.sha}?recursive=1`);
         if (tree.truncated) throw new Error('Veri reposu GitHub\'ın tek seferde listeleyebileceğinden büyük.');
-        const remote = {}; // kullanıcı -> dosya -> sha
+        const remote = {}; // klasör -> dosya -> sha
+        const paths = {};
         for (const e of tree.tree || []) {
-          const m = e.type === 'blob' && e.path.match(/^ilanlar\/([a-z0-9][a-z0-9-]*)\/([A-Za-z0-9_-]+)\.json$/);
+          if (e.type !== 'blob') continue;
+          paths[e.path] = e.sha;
+          const m = e.path.match(/^ilanlar\/([a-z0-9][a-z0-9-]*)\/([A-Za-z0-9_-]+)\.json$/);
           if (m) (remote[m[1]] = remote[m[1]] || {})[m[2]] = e.sha;
         }
-        meta.users = Object.fromEntries(Object.entries(remote).map(([u, f]) => [u, Object.keys(f).length]));
+        // Senin klasörün "efe"; eski sürümlerin açtığı "efe-windows" gibi klasörler de senin
+        const ownFolders = Object.keys(remote).filter((d) => personOf(d) === me);
+        meta.users = {};
+        for (const [d, files] of Object.entries(remote)) {
+          if (personOf(d) !== me) meta.users[personOf(d)] = (meta.users[personOf(d)] || 0) + Object.keys(files).length;
+        }
 
-        // 1) Kendi klasörün: başka bilgisayarında değişenleri al, buradakiyle birleştir
-        const mine = remote[s.user] || {};
+        // 1) Senin ilanların: diğer bilgisayarlarında değişenleri al, buradakiyle birleştir
         const localFiles = new Set(Object.values(loadListings()).map((l) => fileId(l.id)));
-        const toPull = Object.entries(mine).filter(([f, sha]) => meta.own[f] !== sha || !localFiles.has(f));
+        const toPull = [];
+        for (const d of ownFolders) {
+          for (const [f, sha] of Object.entries(remote[d])) if (meta.own[`${d}/${f}`] !== sha || !localFiles.has(f)) toPull.push([d, f, sha]);
+        }
         let done = 0;
-        await pool(toPull, 6, async ([f, sha]) => {
+        await pool(toPull, 6, async ([d, f, sha]) => {
           const r = await fetchBlobJSON(s.repo, sha);
           putListing(mergeSame(getListing(r.id), r));
-          meta.own[f] = sha;
+          meta.own[`${d}/${f}`] = sha;
           res.pulledOwn++;
-          onStep(`kendi ilanların alınıyor ${++done}/${toPull.length}`);
+          onStep(`ilanların alınıyor ${++done}/${toPull.length}`);
         });
 
-        // 2) Kendi klasörüne gidecekler: içeriği GitHub'dakinden farklı olan ilanlar
+        // 2) Ayarlar: aynı kişinin bilgisayarları arasında en son kaydedilen geçerli
         const entries = [];
+        const cfgPath = `ayarlar/${me}.json`;
+        const rcs = paths[cfgPath];
+        if (rcs && rcs !== meta.cfgSha) {
+          const rc = await fetchBlobJSON(s.repo, rcs);
+          if (rc.config && (rc.at || 0) > (GM_getValue('configAt', 0) || 0)) {
+            adoptConfig(rc);
+            res.pulledConfig = rc.by || '?';
+          }
+          meta.cfgSha = rcs;
+          meta.cfgAt = rc.at || 0;
+        }
+        let pendingCfg = null;
+        const localCfg = GM_getValue('config', null); // hiç kaydedilmediyse varsayılan kullanılıyor: gönderecek bir şey yok
+        if (localCfg && (!rcs || (GM_getValue('configAt', 0) || 0) > (meta.cfgAt || 0))) {
+          const at = GM_getValue('configAt', 0) || Date.now();
+          const by = GM_getValue('configBy', '') || s.user;
+          const text = stableStringify({ at, by, config: localCfg });
+          const sha = await gitBlobSha(text);
+          if (sha !== rcs) {
+            entries.push({ path: cfgPath, mode: '100644', type: 'blob', content: text });
+            pendingCfg = { sha, at, by };
+          }
+        }
+
+        // 3) Senin klasörüne gidecek ilanlar: içeriği GitHub'dakinden farklı olanlar
+        const mine = remote[me] || {};
         const pending = {};
+        let nListings = 0;
         for (const l of Object.values(loadListings())) {
           const f = fileId(l.id);
           const text = stableStringify(l);
           const sha = await gitBlobSha(text);
           if (sha === mine[f]) {
-            meta.own[f] = sha;
+            meta.own[`${me}/${f}`] = sha;
             continue;
           }
-          entries.push({ path: `${SYNC_DIR}/${s.user}/${f}.json`, mode: '100644', type: 'blob', content: text });
-          pending[f] = sha;
+          entries.push({ path: `${SYNC_DIR}/${me}/${f}.json`, mode: '100644', type: 'blob', content: text });
+          pending[`${me}/${f}`] = sha;
+          nListings++;
+        }
+        // Eski bilgisayar-adlı klasörler yukarıda birleştirildi; aynı commit'te kaldırılır (git geçmişinde durur)
+        const legacy = [];
+        for (const d of ownFolders) {
+          if (d === me) continue;
+          for (const f of Object.keys(remote[d])) {
+            entries.push({ path: `${SYNC_DIR}/${d}/${f}.json`, mode: '100644', type: 'blob', sha: null });
+            legacy.push(`${d}/${f}`);
+          }
         }
 
-        // 3) Dahil ettiğin kişiler: sadece değişen dosyaları indir; artık dahil olmayanların önbelleğini sil
-        for (const u of Object.keys(meta.others)) {
-          if (s.include.includes(u) && remote[u]) continue;
-          for (const k of otherKeys(u)) GM_deleteValue(k);
-          delete meta.others[u];
+        // 4) Dahil ettiğin kişiler (ali, ali-laptop aynı kişi): sadece değişen dosyaları indir,
+        //    artık dahil olmayanların önbelleğini sil
+        for (const d of Object.keys(meta.others)) {
+          if (remote[d] && personOf(d) !== me && s.include.includes(personOf(d))) continue;
+          for (const k of otherKeys(d)) GM_deleteValue(k);
+          delete meta.others[d];
         }
-        for (const u of s.include) {
-          if (u === s.user || !remote[u]) continue;
-          const known = (meta.others[u] = meta.others[u] || {});
-          const need = Object.entries(remote[u]).filter(([f, sha]) => known[f] !== sha);
+        for (const d of Object.keys(remote)) {
+          const p = personOf(d);
+          if (p === me || !s.include.includes(p)) continue;
+          const known = (meta.others[d] = meta.others[d] || {});
+          const need = Object.entries(remote[d]).filter(([f, sha]) => known[f] !== sha);
           done = 0;
           await pool(need, 6, async ([f, sha]) => {
-            GM_setValue(`${OTHER}${u}:${f}`, await fetchBlobJSON(s.repo, sha));
+            GM_setValue(`${OTHER}${d}:${f}`, await fetchBlobJSON(s.repo, sha));
             known[f] = sha;
             res.pulledOthers++;
-            onStep(`${u} ilanları alınıyor ${++done}/${need.length}`);
+            onStep(`${p} ilanları alınıyor ${++done}/${need.length}`);
           });
           for (const f of Object.keys(known)) {
-            if (remote[u][f]) continue;
-            GM_deleteValue(`${OTHER}${u}:${f}`);
+            if (remote[d][f]) continue;
+            GM_deleteValue(`${OTHER}${d}:${f}`);
             delete known[f];
           }
         }
         saveSyncMeta(meta);
         if (!entries.length) break;
 
-        // 4) Hepsi tek commit. Bu arada başka bir bilgisayar gönderdiyse (422) baştan al ve tekrar dene.
-        onStep(`${entries.length} ilan gönderiliyor…`);
+        // 5) Hepsi tek commit. Bu arada başka bir bilgisayar gönderdiyse (422) baştan al ve tekrar dene.
+        const legacyDirs = [...new Set(legacy.map((x) => x.split('/')[0]))];
+        const what = [nListings ? `${nListings} ilan` : '', pendingCfg ? 'ayarlar' : '', legacyDirs.length ? `${legacyDirs.join(', ')} klasörü ${me} klasörüne taşındı` : '']
+          .filter(Boolean)
+          .join(', ');
+        onStep(`gönderiliyor: ${what}`);
         const nt = await gh('POST', `/repos/${s.repo}/git/trees`, { base_tree: commit.tree.sha, tree: entries });
-        const nc = await gh('POST', `/repos/${s.repo}/git/commits`, { message: `${s.user}: ${entries.length} ilan güncellendi`, tree: nt.sha, parents: [head] });
+        const nc = await gh('POST', `/repos/${s.repo}/git/commits`, { message: `${s.user}: ${what}`, tree: nt.sha, parents: [head] });
         try {
           await gh('PATCH', `/repos/${s.repo}/git/refs/heads/${s.branch}`, { sha: nc.sha, force: false });
         } catch (e) {
@@ -1257,7 +1376,14 @@
             : 'Başka bir bilgisayar da aynı anda gönderiyor; biraz sonra ☁ yazısına tıklayıp tekrar dene.');
         }
         Object.assign(meta.own, pending);
-        res.pushed = entries.length;
+        for (const k of legacy) delete meta.own[k];
+        if (pendingCfg) {
+          Object.assign(meta, { cfgSha: pendingCfg.sha, cfgAt: pendingCfg.at });
+          GM_setValue('configAt', pendingCfg.at);
+          GM_setValue('configBy', pendingCfg.by);
+        }
+        res.pushed = nListings;
+        res.pushedConfig = !!pendingCfg;
         break;
       }
       Object.assign(meta, { at: Date.now(), error: null, last: res });
@@ -1331,6 +1457,14 @@
     label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg); margin: 4px 0; }
     .hint { font-size: 11px; margin-top: -4px; }
     .tab.sync { color: var(--muted); font-size: 12px; }
+    details.tune { background: var(--bg2); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
+    details.tune > summary { color: var(--fg); font-size: 13px; font-weight: 600; margin: 0; }
+    details.tune p { margin: 6px 0; }
+    .tune-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px 22px; margin: 6px 0 4px; }
+    .tgroup { display: grid; gap: 3px; align-content: start; }
+    .trow { display: grid; grid-template-columns: minmax(0, 1fr) 120px 92px; align-items: center; gap: 8px; font-size: 12px; }
+    .trow input { width: 100%; margin: 0; }
+    .trow output { text-align: right; font-variant-numeric: tabular-nums; }
     textarea { width: 100%; min-height: 55vh; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--bg2);
       color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
     .chart text { fill: var(--muted); font-size: 11px; }
@@ -1347,7 +1481,7 @@
 
   let host;
   let root;
-  let state = { open: false, tab: 'sira', status: '', openRows: new Set() };
+  let state = { open: false, tab: 'sira', status: '', openRows: new Set(), tuneOpen: false, rejOpen: false, allCache: null, tuneCfg: null, tuneStart: null, tuneTimer: null };
 
   function mount() {
     host = document.createElement('div');
@@ -1355,6 +1489,7 @@
     document.documentElement.appendChild(host);
     root = host.attachShadow({ mode: 'open' });
     root.addEventListener('click', onClick);
+    root.addEventListener('input', onInput);
     render();
   }
 
@@ -1405,10 +1540,15 @@
         return `<li>${esc(x.name)}: <b>${Math.round(x.points)}/${x.max}</b> <span class="muted">${esc(x.via || '')}${x.pending ? ' ⏳' : ''}</span>${btns}</li>`;
       })
       .join('');
+    // Olması gereken donanımlar (HUD gibi): puanı yok ama şart; metinden "var" denmiş olsa da değiştirilebilir
+    const featLines = (r.hard.feats || [])
+      .map((x) => `<li class="${x.ok === true ? '' : x.ok === false ? 'bad' : 'warn'}">${esc(x.name)}: <b>şart</b> <span class="muted">${esc(x.via)}</span>${manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key], man[x.key] !== undefined && !x.by)}</li>`)
+      .join('');
     const nonOrig = l.parts ? Object.entries(l.parts).filter(([, st]) => st !== 'orijinal') : [];
-    let html = `<div class="detail"><b>Puan dökümü</b><ul>${lines}</ul>`;
-    if (r.hard.decided.length) {
-      html += `<b>Elle kontroller</b><ul>${r.hard.decided
+    let html = `<div class="detail"><b>Puan dökümü</b><ul>${featLines}${lines}</ul>`;
+    const decided = r.hard.decided.filter((d) => !d.key.startsWith('feat:')); // donanımlar yukarıda zaten var
+    if (decided.length) {
+      html += `<b>Elle kontroller</b><ul>${decided
         .map((d) => `<li class="${d.ok ? 'good' : 'bad'}">${esc(d.label)} → <b>${esc(d.ok ? d.yes : d.no)}</b>${byTag(d.by)}${manualBtns(l.id, d.key, d.yes, d.no, d.ok, !d.by)}</li>`)
         .join('')}</ul>`;
     }
@@ -1457,20 +1597,98 @@
       .join('')}</tbody></table>`;
   }
 
+  // ----- Canlı puan ayarı: kaydırdıkça sıralama hemen yeniden hesaplanır -----
+  const getPath = (o, p) => p.reduce((x, k) => (x == null ? x : x[k]), o);
+  function setPath(o, p, v) {
+    const parent = getPath(o, p.slice(0, -1));
+    if (parent) parent[p[p.length - 1]] = v;
+  }
+
+  function tuneSpecs(cfg) {
+    const year = new Date().getFullYear();
+    const s = cfg.scoring;
+    const out = [
+      { g: 'Filtreler', label: 'En fazla KM (altı geçer)', path: ['hardFilters', 'maxKm'], min: 20000, max: 300000, step: 5000, fmt: fmtNum },
+      { g: 'Filtreler', label: 'En az model yılı', path: ['hardFilters', 'minYear'], min: year - 20, max: year + 1, step: 1 },
+      { g: 'Filtreler', label: 'En fazla fiyat', path: ['hardFilters', 'maxPrice'], min: 250000, max: 10000000, step: 50000, fmt: fmtTL },
+      { g: 'KM', label: 'Puan', path: ['scoring', 'km', 'points'], min: 0, max: 100, step: 1 },
+      { g: 'KM', label: 'Bu km ve altı tam puan', path: ['scoring', 'km', 'bestKm'], min: 0, max: 200000, step: 5000, fmt: fmtNum },
+      { g: 'KM', label: 'Bu km ve üstü 0 puan', path: ['scoring', 'km', 'worstKm'], min: 10000, max: 300000, step: 5000, fmt: fmtNum },
+      { g: 'Tramer', label: 'Kayıt yoksa', path: ['scoring', 'tramer', 'noRecordPoints'], min: 0, max: 100, step: 1 },
+    ];
+    (s.tramer.tiers || []).forEach((t, i) => out.push({ g: 'Tramer', label: `${fmtNum(t.below)} TL altı`, path: ['scoring', 'tramer', 'tiers', i, 'points'], min: 0, max: 100, step: 1 }));
+    (s.criteria || []).forEach((c, i) => out.push({ g: 'Kriterler', label: c.name, path: ['scoring', 'criteria', i, 'points'], min: 0, max: 100, step: 1 }));
+    return out;
+  }
+
+  function renderTune() {
+    const cfg = loadConfig();
+    let html = '<div class="tune-grid">';
+    let g = null;
+    tuneSpecs(cfg).forEach((sp, i) => {
+      const v = Number(getPath(cfg, sp.path)) || 0;
+      if (sp.g !== g) {
+        html += `${g === null ? '' : '</div>'}<div class="tgroup"><b>${esc(sp.g)}</b>`;
+        g = sp.g;
+      }
+      html += `<label class="trow"><span>${esc(sp.label)}</span><input type="range" data-tune="${i}" min="${Math.min(sp.min, v)}" max="${Math.max(sp.max, v)}" step="${sp.step}" value="${v}"><output data-tune-out="${i}">${esc((sp.fmt || String)(v))}</output></label>`;
+    });
+    return html + '</div></div>';
+  }
+
+  function onInput(e) {
+    const t = e.target.closest && e.target.closest('[data-tune]');
+    if (!t) return;
+    if (!state.tuneCfg) state.tuneCfg = loadConfig();
+    if (!state.tuneStart) {
+      state.tuneStart = JSON.parse(JSON.stringify(state.tuneCfg)); // "Başlangıca dön" için
+      const u = root.querySelector('[data-action="tune-undo"]');
+      if (u) u.disabled = false;
+    }
+    const i = Number(t.dataset.tune);
+    const sp = tuneSpecs(state.tuneCfg)[i];
+    const v = Number(t.value);
+    setPath(state.tuneCfg, sp.path, v);
+    const out = root.querySelector(`[data-tune-out="${i}"]`);
+    if (out) out.textContent = (sp.fmt || String)(v);
+    // Sadece listeyi yeniden çiz; kaydırıcıya dokunma ki sürüklemeye devam edebilesin
+    const box = root.querySelector('[data-ranking]');
+    if (box) box.innerHTML = rankingBody(computeRows(state.allCache || loadAllListings(), state.tuneCfg));
+    clearTimeout(state.tuneTimer);
+    state.tuneTimer = setTimeout(flushTune, 700);
+  }
+
+  function flushTune() {
+    clearTimeout(state.tuneTimer);
+    if (!state.tuneCfg) return;
+    saveConfig(state.tuneCfg);
+    state.tuneCfg = null;
+  }
+
   function renderRanking(result) {
-    const fromOthers = result.all.filter((r) => r.l._owner).length;
     let html = `<div class="bar">
       <button class="primary" data-action="ai" ${aiRunning ? 'disabled' : ''}>Yerel AI analizini çalıştır</button>
       ${aiRunning ? '<button data-action="ai-stop">Durdur</button>' : ''}
       <button data-action="claude" ${result.passed.length + result.unsure.length ? '' : 'disabled'}>Claude için kopyala</button>
       <span class="muted" data-status>${esc(state.status)}</span></div>`;
-    html += `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi</p>`;
+    html += `<details class="tune" ${state.tuneOpen ? 'open' : ''}><summary data-tune-toggle>⚙ Puanları ve filtreleri ayarla</summary>
+      <p class="muted">Kaydırdıkça sıralama hemen değişir, ayar kendiliğinden kaydedilir${syncReady() ? ' ve diğer bilgisayarlarına gider' : ''}.
+      <button class="mini" data-action="tune-undo" ${state.tuneStart ? '' : 'disabled'}>Başlangıca dön</button></p>${renderTune()}</details>`;
+    return html + `<div data-ranking>${rankingBody(result)}</div>`;
+  }
+
+  function rankingBody(result) {
+    const fromOthers = result.all.filter((r) => r.l._owner).length;
+    let html = `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi</p>`;
     html += `<h2>En iyi ${MAX_TOP}</h2>` + table(result.passed.slice(0, MAX_TOP), 0);
+    if (result.passed.length > MAX_TOP) {
+      html += `<h2>Filtreyi geçen diğer ${result.passed.length - MAX_TOP} ilan <span class="muted">(puana göre)</span></h2>` + table(result.passed.slice(MAX_TOP), MAX_TOP);
+    }
     if (result.unsure.length) {
       html += `<h2>Kontrol edilecekler <span class="muted">(ilandan doğrulanamayan şartlar — ilana bakıp kendin işaretle)</span></h2>` + table(result.unsure.slice(0, MAX_TOP), 0);
     }
     if (result.rejected.length) {
-      html += `<details><summary>Elenen ${result.rejected.length} ilan</summary><ul>${result.rejected
+      html += `<details ${state.rejOpen ? 'open' : ''}><summary data-rej-toggle>Elenen ${result.rejected.length} ilan</summary><ul>${result.rejected
         .map((r) => `<li><a href="${esc(r.l.url)}" target="_blank">${esc(r.l.title)}</a> <span class="bad">${esc(r.hard.fails.join(', '))}</span>${r.hard.decided
           .filter((d) => !d.ok)
           .map((d) => manualBtns(r.l.id, d.key, d.yes, d.no, false, !d.by))
@@ -1531,14 +1749,23 @@
   }
 
   function renderSettings() {
+    const backup = GM_getValue('configBackup', null);
+    const by = GM_getValue('configBy', '');
+    const at = GM_getValue('configAt', 0);
+    const fmtAt = (t) => new Date(t).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     return `<p class="muted">Ayarları JSON olarak düzenle. Puanlar ve filtreler kaydettiğin anda tüm ilanlara yeniden uygulanır, sayfaları tekrar gezmen gerekmez.
-      <br>Kriterlerde <code>keywords</code> ilan metninde aranır; <code>vision</code> varsa metinde bulunamadığında fotoğraflar yerel AI'a sorulur; <code>allOf</code> diğer kriterlerin hepsi sağlanınca geçerli olur.</p>
+      Sayıları denemek için Sıralama sekmesindeki <b>Puanları ve filtreleri ayarla</b> kaydırıcıları daha hızlı.
+      <br>Kriterlerde <code>keywords</code> ilan metninde aranır; <code>vision</code> varsa metinde bulunamadığında fotoğraflar yerel AI'a sorulur; <code>allOf</code> diğer kriterlerin hepsi sağlanınca geçerli olur.
+      Donanımlarda <code>unsureKeywords</code>: ilanda sadece bunlar geçiyorsa "var" sayılmaz, sana sorulur.
+      ${syncReady() ? '<br>Ayarlar, kişi adın aynı olan bütün bilgisayarlarında ortak; en son kaydedilen geçerli.' : ''}
+      ${at ? `<br>Son kayıt: ${esc(fmtAt(at))}${by ? ` (${esc(by)})` : ''}.` : ''}</p>
       <textarea data-config spellcheck="false">${esc(JSON.stringify(loadConfig(), null, 2))}</textarea>
       <div class="bar" style="margin-top:8px">
         <button class="primary" data-action="cfg-save">Kaydet</button>
         <button data-action="cfg-export">Dosyaya indir</button>
         <button data-action="cfg-import">Dosyadan yükle</button>
         <button data-action="cfg-reset">Varsayılana dön</button>
+        ${backup ? `<button data-action="cfg-restore" title="${esc(backup.from ? backup.from + ' bilgisayarından gelen ayarlar yüklenmeden önceki hali' : 'Önceki hali')}">Önceki ayarları geri yükle (${esc(fmtAt(backup.at))})</button>` : ''}
         <span class="muted" data-status>${esc(state.status)}</span>
       </div>`;
   }
@@ -1579,12 +1806,15 @@
     const m = loadSyncMeta();
     const hasToken = !!getToken();
     const last = m.last ? `son seferde ${m.last.pushed} ilan gönderildi, ${m.last.pulledOwn + m.last.pulledOthers} ilan alındı` : '';
-    return `<p class="muted">İlanların ve analizlerin GitHub'daki özel veri reposunda, kendi klasöründe saklanır. Aynı kullanıcı adını girdiğin bütün bilgisayarlar aynı veriyi görür.
+    const me = personOf(s.user);
+    const dev = s.user.includes('-') ? s.user.slice(me.length + 1) : '';
+    return `<p class="muted">İlanların, analizlerin ve ayarların GitHub'daki özel veri reposunda, kendi klasöründe saklanır.
+      Kullanıcı adının tireden önceki kısmı aynı olan bütün bilgisayarlar (efe-windows, efe-mac) tek kişi sayılır: aynı ilanları, analizleri ve ayarları görür, birbirinin üstüne yazabilir.
       Başkalarının klasörüne hiç yazılmaz: onların verisini dahil edersen sende görünür, bir şeyini değiştirirsen değişiklik senin klasörüne kendi kopyan olarak kaydedilir.</p>
       <div class="form">
         <label>Veri reposu <input data-share="repo" value="${esc(s.repo)}" spellcheck="false"></label>
-        <label>Kullanıcı adın <input data-share="user" value="${esc(s.user)}" placeholder="ör. efe" spellcheck="false" autocomplete="off"></label>
-        <span class="muted hint">Küçük harf, rakam ve tire. Kendi bilgisayarlarının hepsinde aynı adı kullan, arkadaşların farklı ad seçsin.</span>
+        <label>Kullanıcı adın <input data-share="user" value="${esc(s.user)}" placeholder="ör. efe-windows" spellcheck="false" autocomplete="off"></label>
+        <span class="muted hint">${s.user ? `Kişi: <b>${esc(me)}</b>${dev ? ` · bu bilgisayar: <b>${esc(dev)}</b>` : ''}. ` : ''}Biçim: kişi-bilgisayar (efe-windows, efe-mac). Küçük harf ve rakam; arkadaşların kendi adlarıyla başlasın.</span>
         <label>GitHub token <input data-share="token" type="password" placeholder="${hasToken ? 'Kayıtlı. Değiştirmek için yenisini yapıştır.' : 'github_pat_…'}" autocomplete="off" spellcheck="false"></label>
         <label class="check"><input type="checkbox" data-share="auto" ${s.auto ? 'checked' : ''}> Otomatik eşitle (ilan kaydedince, karar verince, AI analizi bitince)</label>
       </div>
@@ -1600,6 +1830,7 @@
 
   function render() {
     if (!root) return;
+    flushTune(); // kaydırıcıda kaydedilmemiş değişiklik varsa yeniden çizmeden önce kaydet
     const queue = loadQueue();
     const count = countListings();
     let fab = '<div class="fab">';
@@ -1613,7 +1844,8 @@
     let panel = '';
     if (state.open) {
       const cfg = loadConfig();
-      const result = computeRows(loadAllListings(), cfg);
+      state.allCache = loadAllListings();
+      const result = computeRows(state.allCache, cfg);
       const tabs = [['sira', 'Sıralama'], ['analiz', 'Piyasa analizi'], ['ayar', 'Ayarlar'], ['veri', 'Veri'], ['paylasim', 'Paylaşım']];
       const views = { sira: () => renderRanking(result), analiz: () => renderAnalysis(result), ayar: renderSettings, veri: renderData, paylasim: renderShare };
       const body = (views[state.tab] || views.sira)();
@@ -1686,6 +1918,14 @@
       return;
     }
     // Ayrıntılar açık/kapalı durumu render sonrası korunsun (açma işini tarayıcı yapar)
+    if (e.target.closest('summary[data-tune-toggle]')) {
+      state.tuneOpen = !state.tuneOpen;
+      return;
+    }
+    if (e.target.closest('summary[data-rej-toggle]')) {
+      state.rejOpen = !state.rejOpen;
+      return;
+    }
     const sum = e.target.closest('summary[data-row]');
     if (sum) {
       const rowId = sum.dataset.row;
@@ -1742,13 +1982,13 @@
       const field = (k) => root.querySelector(`[data-share="${k}"]`);
       const user = field('user').value.trim().toLowerCase();
       const repo = field('repo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, '');
-      if (!USER_RE.test(user)) return setStatus('⚠ Kullanıcı adı 2–30 karakter olmalı: küçük harf, rakam ve tire (Türkçe harf yok).');
+      if (!USER_RE.test(user)) return setStatus('⚠ Kullanıcı adı "efe" ya da "efe-mac" gibi olmalı: küçük harf ve rakam, Türkçe harf yok.');
       if (!REPO_RE.test(repo)) return setStatus('⚠ Veri reposu "hesap/repo-adı" biçiminde olmalı.');
       const prev = loadShare();
       const include = [...root.querySelectorAll('[data-include]')].filter((x) => x.checked).map((x) => x.dataset.include);
       const token = field('token').value.trim();
       if (token) GM_setValue('ghToken', token);
-      if (prev.user !== user || prev.repo !== repo) {
+      if (personOf(prev.user) !== personOf(user) || prev.repo !== repo) {
         // Başka klasör ya da repo: eşitleme kayıtları baştan, başkalarından gelen önbellek silinir
         for (const k of otherKeys()) GM_deleteValue(k);
         saveSyncMeta({});
@@ -1815,6 +2055,23 @@
       if (!confirm('Ayarlar varsayılana dönsün mü?')) return;
       saveConfig(JSON.parse(JSON.stringify(DEFAULT_CONFIG)));
       state.status = 'Varsayılan ayarlar yüklendi.';
+      return render();
+    }
+    if (action === 'tune-undo') {
+      if (!state.tuneStart) return;
+      clearTimeout(state.tuneTimer);
+      state.tuneCfg = null;
+      saveConfig(state.tuneStart);
+      state.tuneStart = null;
+      state.status = 'Puanlar ayarlamaya başlamadan önceki haline döndü.';
+      return render();
+    }
+    if (action === 'cfg-restore') {
+      const backup = GM_getValue('configBackup', null);
+      if (!backup || !confirm('Başka bilgisayardan gelen ayarlardan önceki hali geri yüklensin mi? Şimdiki ayarlar yedeğe alınır.')) return;
+      GM_setValue('configBackup', { config: loadConfig(), at: Date.now(), from: '' });
+      saveConfig(backup.config);
+      state.status = 'Önceki ayarlar geri yüklendi.';
       return render();
     }
     if (action === 'cfg-export') return download('asistan-ayarlar.json', JSON.stringify(loadConfig(), null, 2));

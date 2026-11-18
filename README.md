@@ -41,7 +41,8 @@ Fotoğraf analizi Apple Silicon Mac'lerde ve ekran kartı olan PC'lerde fotoğra
 2. Arama sonuçlarında **"Sayfadaki N ilanı kuyruğa ekle"** düğmesine bas. Birden fazla sayfa varsa her sayfada tekrarla.
 3. İlk ilanı aç. Asistan ilanı otomatik kaydeder ve puanını gösterir. **"Sonraki ilan →"** ile sıradakine geç.
 4. Bitince **🚗 Asistan** düğmesiyle paneli aç:
-   - **Sıralama:** En iyi 10, doğrulanamayan ama puanı yüksek ilanlar ve elenenler. Her satırın "ayrıntılar" kısmında puan dökümü, boya bilgisi ve uyarılar var.
+   - **Sıralama:** En iyi 10, altında filtreyi geçen diğer ilanlar (puana göre), doğrulanamayan ama puanı yüksek ilanlar ve elenenler. Her satırın "ayrıntılar" kısmında puan dökümü, boya bilgisi ve uyarılar var.
+   - **⚙ Puanları ve filtreleri ayarla:** Sıralamanın üstündeki kaydırıcılarla KM, tramer ve kriter puanlarını, en fazla km / en az yıl / en fazla fiyat filtrelerini değiştir. Kaydırdıkça liste hemen yeniden sıralanır, ayar kendiliğinden kaydedilir. Beğenmezsen **Başlangıca dön**.
    - **Yerel AI analizini çalıştır:** Filtreyi geçen ve doğrulanamayan ilanların fotoğraflarına ve açıklamalarına bakar. Sekme açık kalmalı; durdurursan veya sekme kapanırsa kaldığı yerden devam eder.
    - **Claude için kopyala:** İlk 10 ilanın kısa özetini panoya kopyalar. claude.ai'da yeni bir sohbete yapıştır, karşılaştırmalı yorum, satıcıya sorulacak sorular ve ekspertiz önerileri al (yaklaşık 10–25 bin token).
    - **Piyasa analizi:** Gezdiğin tüm ilanlardan (elenenler dahil) bir fiyat modeli kurar: her ilanın piyasaya göre yüzde kaç ucuz veya pahalı olduğu, km başına ve model yılı başına fiyat etkisi, fiyat/km grafiği. En az 8 ilan gerekir.
@@ -54,11 +55,13 @@ Fiyatı değişen ilanları tekrar açarsan asistan eski ve yeni fiyatı uyarı 
 
 Puan dökümündeki kriterleri de aynı şekilde elle işaretleyebilirsin. Senin kararın metin ve fotoğraf analizinin önüne geçer, yerel AI elle karara bağladığın kriterlere bir daha bakmaz. Kararlar ilanla birlikte saklanır, ayar değiştirince silinmez. GitHub paylaşımı açıksa diğer bilgisayarlarına da gider.
 
+**Olması gereken donanımlar (HUD gibi)** puan dökümünün en üstünde "şart" olarak durur ve metinden "var" denmiş olsa bile **Var/Yok** ile değiştirilebilir. Satıcılar "hayalet" kelimesini HUD dışındaki şeyler için de kullanıyor (ör. "yarı hayalet ekran", "hayalet kadran", "dijital hayalet gösterge (Live Cockpit)"). İlanda sadece bu tür ifadeler geçiyorsa HUD "var" sayılmaz, "Kontrol edilecekler"e düşer. Bu liste ayarlardaki `unsureKeywords` alanında.
+
 ## 4. Ayarlar
 
 Panelde **Ayarlar** sekmesinden JSON olarak düzenlenir. Değişiklikler tüm kayıtlı ilanlara anında uygulanır.
 
-- `hardFilters`: Mutlak filtreler. `maxKm` bu değerin altı, `minYear` en az, `maxPrice` en fazla. `originalParts` orijinal olması gereken parçalar. `requiredFeatures` ilan metninde geçmesi gereken donanımlar.
+- `hardFilters`: Mutlak filtreler. `maxKm` bu değerin altı, `minYear` en az, `maxPrice` en fazla. `originalParts` orijinal olması gereken parçalar. `requiredFeatures` ilan metninde geçmesi gereken donanımlar: `keywords` geçerse var sayılır, sadece `unsureKeywords` içindeki bir ifadenin parçası olarak geçerse sana sorulur.
 - `scoring.km`: `bestKm` ve altı tam puan, `worstKm` ve üstü 0, arası doğrusal.
 - `scoring.tramer`: Kayıt yoksa `noRecordPoints`, yoksa `tiers` içindeki ilk uyan basamak (`below` altı), hiçbiri uymazsa 0. Tramer bilinmiyorsa 0.
 - `scoring.criteria`: Her kriter için:
@@ -68,14 +71,17 @@ Panelde **Ayarlar** sekmesinden JSON olarak düzenlenir. Değişiklikler tüm ka
 
 `ayarlar-bmw.json` varsayılan ayarlardır. Arkadaşlarına kendi ayarlarını göndermek için **Ayarlar → Dosyaya indir**, yüklemek için **Dosyadan yükle**.
 
+GitHub paylaşımı açıksa ayarlar kendi bilgisayarların arasında eşitlenir: en son kaydedilen geçerli olur. Başka bilgisayarından gelen ayar buradakinin üstüne yazılmadan önce yedeklenir, **Ayarlar → Önceki ayarları geri yükle** ile dönebilirsin.
+
 ## 5. Ortak veri: bilgisayarların ve arkadaşların arasında
 
-İlanları, AI analizlerini ve Var/Yok kararlarını GitHub'daki **özel** bir veri reposunda tutar. Böylece bir bilgisayarda gezdiğin ve analiz ettiğin ilanları öbür bilgisayarda tekrar gezmen ve analiz etmen gerekmez.
+İlanları, AI analizlerini, Var/Yok kararlarını ve ayarları GitHub'daki **özel** bir veri reposunda tutar. Böylece bir bilgisayarda gezdiğin ve analiz ettiğin ilanları öbür bilgisayarda tekrar gezmen ve analiz etmen gerekmez.
 
 **Nasıl çalışır**
 
-- Veri reposunda herkesin klasörü ayrı: `ilanlar/<kullanıcı adı>/<ilan no>.json`. Script sadece senin klasörüne yazar.
-- Kendi bilgisayarlarının hepsine **aynı kullanıcı adını** girersen hepsi aynı veriyi görür. Aynı ilan iki bilgisayarda farklıysa birleştirilir: en son görülen ilan bilgisi, birleşik fiyat geçmişi, en yeni analiz ve en yeni karar kalır.
+- Kullanıcı adı **kişi-bilgisayar** biçiminde: `efe-windows`, `efe-mac`. Tireden önceki kısım (`efe`) kişidir.
+- Aynı kişinin bütün bilgisayarları **tek kullanıcı** gibi çalışır: aynı klasör (`ilanlar/efe/`), aynı ayarlar (`ayarlar/efe.json`). Biri ne yaparsa öbüründe kendi işin olarak görünür, birbirinin kararlarının ve ayarlarının üstüne yazabilir. Aynı ilan iki bilgisayarda farklıysa birleştirilir: en son görülen ilan bilgisi, birleşik fiyat geçmişi, en yeni analiz ve en yeni karar kalır.
+- Script sadece senin klasörüne yazar. 0.6.0'dan önceki sürümlerin bilgisayar adıyla açtığı klasörler (ör. `ilanlar/efe-windows/`) ilk eşitlemede `ilanlar/efe/` ile birleştirilip kaldırılır.
 - **Paylaşım** sekmesinde, veri reposunda klasörü olan diğer kişileri tek tek **dahil edebilirsin**. Varsayılan olarak kimse dahil değildir, sadece kendi verini görürsün.
 - Dahil ettiğin birinin ilanı listende "kaynak: ali" gibi görünür, onun AI analizleri ve kararları da adıyla işaretlenir. Senin kopyan varsa esas o alınır, eksikleri onunkinden tamamlanır.
 - Başkasının ilanında bir şeyi değiştirirsen (Var/Yok ya da AI analizi) onun dosyasına dokunulmaz: ilan **senin klasörüne kopyalanır** ve değişiklik orada yapılır. Yani aynı ilanın iki kopyası olur.
@@ -89,19 +95,19 @@ Panelde **Ayarlar** sekmesinden JSON olarak düzenlenir. Değişiklikler tüm ka
    - **Repository access:** *Only select repositories* → `sahibinden-asistan-veri`
    - **Permissions → Repository permissions → Contents:** *Read and write* (Metadata kendiliğinden *Read-only* olur)
    - **Generate token** → çıkan `github_pat_…` değerini kopyala. Bu değer bir daha gösterilmez.
-2. Her bilgisayarda: **🚗 Asistan → Paylaşım** → kullanıcı adını yaz (ör. `efe`) → token'ı yapıştır → **Kaydet ve eşitle**.
+2. Her bilgisayarda: **🚗 Asistan → Paylaşım** → kullanıcı adını yaz (ör. `efe-windows`, `efe-mac`) → token'ı yapıştır → **Kaydet ve eşitle**.
 3. İlk eşitlemede Tampermonkey `api.github.com` adresine erişim için izin isterse **Her zaman izin ver** de.
 
 **Arkadaşlar için**
 
-Arkadaşın script'i yukarıdaki linkten kurar. Paylaşım sekmesine kendine ait farklı bir kullanıcı adı (ör. `ali`) ve senin verdiğin token'ı girer. GitHub hesabı olması gerekmez.
+Arkadaşın script'i yukarıdaki linkten kurar. Paylaşım sekmesine kendi adıyla başlayan bir kullanıcı adı (ör. `ali` ya da `ali-laptop`) ve senin verdiğin token'ı girer. GitHub hesabı olması gerekmez. Ayarları seninkilerle karışmaz, herkesinki ayrı.
 
 Token'ı paylaşmanın bedeli şu: token'ı olan herkes veri reposunun tamamını okuyabilir ve teknik olarak her klasöre yazabilir. Script başkasının klasörüne yazmaz, git geçmişi de her sürümü sakladığı için bir şey bozulursa geri alınabilir. Birini çıkarmak istersen eski token'ı GitHub'dan sil, yenisini oluşturup sadece kalanlara ver.
 
 **Bilmen gerekenler**
 
 - Token sadece o tarayıcıda saklanır. Ayar dosyasına, veri dışa aktarımına ve Claude için kopyalanan metne girmez.
-- Ayarlar (filtreler, puanlar) eşitlenmez, herkes kendi kriterleriyle sıralar. Aynı ayarları kullanmak için **Ayarlar → Dosyaya indir / Dosyadan yükle**.
+- Ayarlar (filtreler, puanlar) sadece aynı kişinin bilgisayarları arasında eşitlenir; arkadaşlarınla paylaşılmaz, herkes kendi kriterleriyle sıralar. Bir arkadaşınla aynı ayarları kullanmak için **Ayarlar → Dosyaya indir / Dosyadan yükle**.
 - **Veri → Tüm ilanları sil** sadece o tarayıcıdaki kopyayı siler. GitHub'daki dosyalar durur, otomatik eşitleme açıksa bir sonraki eşitlemede geri gelir.
 - İlan açıklamalarında satıcı adı ya da telefonu geçebildiği için veri reposu **özel** kalmalı.
 
