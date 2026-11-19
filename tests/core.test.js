@@ -247,6 +247,41 @@ const fc = A.facetCounts(fr, { ...A.EMPTY_FILTER, kmMax: 50000 }, cfg);
 eq('filtre: düğme sayıları diğer seçimlerle', [fc['crit:kirmizi'], fc['crit:shadow']], [1, 2]);
 eq('filtre: sıra puana göre', A.applyFilter(fr, { ...A.EMPTY_FILTER, kmMax: 60000 }).map((r) => Math.round(r.score.total)).every((s, i, a) => i === 0 || a[i - 1] >= s), true);
 
+// Benim sıralamam: "önemli" bileşenler (varsayılan model yılı) en az %10 pay alır
+// Gerçek bir sıralamaya benzer: üstte 2020-2021 Shadow'lar, Shadow'suzlarda 2022 > 2020, en yeni (2023) tramerli olduğu için en altta.
+// Yıl tek başına sıralamayı açıklamıyor; işaretlenmezse kalibrasyon yıla neredeyse puan vermiyordu.
+const CB = (id, year, km, desc, extra = {}) => ({
+  id, url: 'https://www.sahibinden.com/ilan/' + id, title: 'BMW 218i ' + id, price: 2200000, year, km,
+  info: { Renk: 'Beyaz' }, features: [], description: 'Hayalet gösterge. M Sport. ' + desc,
+  parts: { 'Tavan': 'orijinal', 'Motor Kaputu': 'orijinal' }, images: [], ...extra,
+});
+const YL = {
+  y1: CB('y1', 2021, 84000, 'Shadow paket. Tramer kaydı yoktur.'),
+  y2: CB('y2', 2021, 110000, 'Shadow paket. Tramer kaydı yoktur.'),
+  y3: CB('y3', 2020, 98000, 'Shadow paket. Tramer kaydı yoktur.'),
+  y4: CB('y4', 2022, 72000, 'Tramer kaydı yoktur.'),
+  y5: CB('y5', 2022, 67000, 'Tramer kaydı yoktur.'),
+  y6: CB('y6', 2020, 73000, 'Tramer kaydı yoktur.'),
+  y7: CB('y7', 2020, 73000, 'Tramer kaydı yoktur.', { price: 2380000 }),
+  y8: CB('y8', 2023, 64000, 'Tramer 20 bin TL.'),
+};
+const yorder = ['y1', 'y2', 'y3', 'y4', 'y5', 'y6', 'y7', 'y8'];
+eq('önemli: varsayılan model yılı', A.importantOf(cfg), ['year']);
+eq('önemli: ayardaki liste geçerli', A.importantOf({ calibration: { order: [], important: [] } }), []);
+const yFree = A.calibrate(YL, yorder, cfg, { important: [] });
+const yImp = A.calibrate(YL, yorder, cfg);
+eq('önemli: işaretsiz yıl az puan alıyor', yFree.suggested.scoring.year.points < yImp.floor, true);
+eq('önemli: işaretli yıl en az %10 (15 puan)', [yImp.floor, yImp.suggested.scoring.year.points >= yImp.floor], [15, true]);
+eq('önemli: yıl aralığı sıralanan ilanlardan', [yImp.suggested.scoring.year.worst, yImp.suggested.scoring.year.best], [2020, 2023]);
+eq('önemli: Shadowsuzlarda 2022 > 2020', A.scoreListing(YL.y4, yImp.suggested).total > A.scoreListing(YL.y6, yImp.suggested).total, true);
+eq('önemli: toplam puan korunur', Math.abs(A.scoreListing(YL.y1, yImp.suggested).max - A.scoreListing(YL.y1, cfg).max) <= 2, true);
+eq('önemli: öğrenildi bilgisi', yImp.important.map((x) => [x.key, x.learned]), [['year', true]]);
+eq('önemli: uyum yine artar', yImp.after > yImp.before, true);
+const sameYear = Object.fromEntries(Object.entries(YL).map(([k, l]) => [k, { ...l, year: 2021 }]));
+eq('önemli: hepsi aynı yılsa öğrenilemez', A.calibrate(sameYear, yorder, cfg).important.map((x) => x.learned), [false]);
+const two = A.calibrate(YL, yorder, cfg, { important: ['year', 'km'] });
+eq('önemli: iki bileşen ikisi de alt sınırda', [two.suggested.scoring.year.points >= two.floor, two.suggested.scoring.km.points >= two.floor], [true, true]);
+
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));
 eq('ayarlar-bmw.json = DEFAULT_CONFIG', require('util').isDeepStrictEqual(fileCfg, A.DEFAULT_CONFIG), true);

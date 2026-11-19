@@ -67,6 +67,8 @@ Puanları tek tek ayarlamak yerine ilanları kendi önceliğine göre sırala, a
 
 **Renk:** hangi rengi ne kadar tercih ettiğini bilmen gerekmez; sıraladıkça ortaya çıkar (ör. Siyah +24, Gri +4, Beyaz 0). Renk ilanın "Renk" alanından okunur, tonlar ana renge toplanır ("Gri (Gümüş)" → Gri). Bir renk ancak sıraladığın ilanlarda en az 2 kez geçiyorsa öğrenilir; tek ilanın yeri renge yüklenmesin diye.
 
+**Önemli bulduğun bileşenler:** Az ilanla sıralama, bir bileşenin ne kadar önemli olduğunu tek başına söyleyemeyebilir. Örneğin en üstte 2020–2021 model Shadow'lar, en altta tramerli bir 2023 varsa sıralaman "yeni model iyidir" demiyor gibi görünür, oysa Shadow'suzlar arasında 2022'yi 2020'nin üstüne koymuşsundur. Bu durumda asistan yıla neredeyse puan vermezdi. Uyum oranının altındaki düğmelerle bileşenleri **önemli** işaretle (KM, fiyat, model yılı ve kriterler). İşaretli her bileşen toplam puanın en az %10'unu alır, kalan puanlar sıralamandan öğrenilir. **Model yılı varsayılan olarak işaretli.** İşaretlemenin uyuma bir maliyeti olursa ("Önemli işaretlemeseydin uyum %93 olurdu") altında yazar. Önemli bir bileşen sıraladığın ilanlarda hep aynıysa (ör. hepsi 2021) öğrenilemez, uyarı çıkar. Fiyat ve model yılı henüz puan almıyorsa aralıkları sıraladığın ilanlardan alınır: en yeni yıl tam puan, en eski 0.
+
 Kurallar: puanlar eksi olmaz, toplam puan aynı kalır, daha az tramer hiçbir zaman daha az puan almaz. Sıraladığın ilanlarda hiç fark yaratmayan bir bileşen (ör. hiçbirinde Shadow yoksa) olduğu gibi kalır; sıralaman onun hakkında bir şey söylemiyor. Mutlak filtreler değişmez. Sıralaman ayarların içinde saklanır ve diğer bilgisayarlarına da gider.
 
 ### Arama sonuçlarında rozetler

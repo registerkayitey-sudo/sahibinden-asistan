@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.9.0
+// @version      0.10.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -910,8 +910,20 @@
     return t + col;
   }
 
-  function projectWeights(w, comps, S) {
-    const out = w.map((v) => Math.max(0, v));
+  // "Önemli" işaretlediğin bileşenler (varsayılan: model yılı) toplam puanın en az bu payını alır; kalan puan
+  // sıralamandan öğrenilir. Az ilanla sıralama, yılın ne kadar önemli olduğunu tek başına söyleyemeyebiliyor
+  // (ör. en yeni araç tramer yüzünden en altta): o belirsizlikte yıl eski değerine (0) yakın kalıyordu.
+  const IMPORTANT_DEFAULT = ['year'];
+  const IMPORTANT_SHARE = 0.1;
+  const importantOf = (cfg) => (cfg.calibration && Array.isArray(cfg.calibration.important) ? cfg.calibration.important : IMPORTANT_DEFAULT);
+  // Tramer ve renkler işaretlenemez: tramer basamakları ve "renklerden sadece en yükseği" kuralı alt sınırla karışır
+  const floorable = (c) => c.key === 'km' || c.key === 'price' || c.key === 'year' || !!c.crit;
+
+  // floors: bileşen başına alt sınır (puan). Alt sınırın üstündeki kısım ≥ 0, tramer basamakları monoton,
+  // toplam puan S'de sabit.
+  function projectWeights(w, comps, S, floors) {
+    const f = (i) => (floors && floors[i]) || 0;
+    const out = w.map((v, i) => Math.max(0, v - f(i)));
     const t0 = comps.findIndex((c) => c.key === 'tramer0');
     let prev = t0 >= 0 ? out[t0] : Infinity;
     comps.forEach((c, i) => {
@@ -919,15 +931,16 @@
       out[i] = Math.min(out[i], prev);
       prev = out[i];
     });
+    const room = Math.max(0, S - maxTotal(comps.map((c, i) => f(i)), comps));
     const tot = maxTotal(out, comps);
-    return tot > 0 ? out.map((v) => (v * S) / tot) : out;
+    return out.map((v, i) => (tot > 0 ? (v * room) / tot : v) + f(i));
   }
 
   // Sıralama için lojistik kayıp + şimdiki ağırlıklara hafif çekim, izdüşümlü gradyan inişi
-  function fitWeights(X, w0, comps, S, iters = 400) {
+  function fitWeights(X, w0, comps, S, iters = 400, floors = null) {
     const D = [];
     for (let i = 0; i < X.length; i++) for (let j = i + 1; j < X.length; j++) D.push(X[i].map((v, t) => v - X[j][t]));
-    const wPrior = projectWeights(w0, comps, S);
+    const wPrior = projectWeights(w0, comps, S, floors);
     if (!D.length) return wPrior;
     const k = w0.length;
     const kappa = 20 / S;
@@ -943,7 +956,7 @@
         for (let t = 0; t < k; t++) g[t] -= (kappa * sg * d[t]) / D.length;
       }
       for (let t = 0; t < k; t++) g[t] += 2 * lambda * (w[t] - wPrior[t]);
-      w = projectWeights(w.map((v, t) => v - lr * g[t]), comps, S);
+      w = projectWeights(w.map((v, t) => v - lr * g[t]), comps, S, floors);
       lr *= 0.993;
     }
     return w;
@@ -963,19 +976,22 @@
   }
 
   // listings: { id: ilan }, order: senin sıraladığın ilan id'leri (en iyi önce)
-  function calibrate(listings, order, cfg) {
+  // opts.important: "önemli" bileşen anahtarları (verilmezse ayardaki liste, o da yoksa model yılı)
+  function calibrate(listings, order, cfg, opts = {}) {
     const ranked = (order || []).map((id) => listings[id]).filter(Boolean);
     if (ranked.length < 3) return null;
     const base = clone(cfg);
     const s = base.scoring;
-    // Fiyat ve yıl puanı hiç tanımlanmamışsa aralığı sıraladığın ilanlardan al
+    const important = opts.important || importantOf(cfg);
+    // Fiyat ve yıl henüz puan almıyorsa aralığı sıraladığın ilanlardan al (en ucuz/en yeni tam puan, en pahalı/en eski 0):
+    // varsayılan 2020–2024 aralığında 2020–2023 ilanlar arasındaki fark puana küçük yansıyordu
     const range = (f, lowIsBest) => {
       const v = ranked.map(f).filter((x) => typeof x === 'number' && isFinite(x));
       if (!v.length) return { points: 0, best: 0, worst: 0 };
       return lowIsBest ? { points: 0, best: Math.min(...v), worst: Math.max(...v) } : { points: 0, best: Math.max(...v), worst: Math.min(...v) };
     };
-    if (!s.price) s.price = range((l) => l.price, true);
-    if (!s.year) s.year = range((l) => l.year, false);
+    if (!s.price || !s.price.points) s.price = range((l) => l.price, true);
+    if (!s.year || !s.year.points) s.year = range((l) => l.year, false);
     // Sıraladığın ilanlarda geçen renkler (henüz puanı olmayanlar 0 ile eklenir)
     s.colors = (s.colors || []).slice();
     const colorCount = {};
@@ -1008,24 +1024,33 @@
         const free = comps.map((c, i) => (c.key === 'tramer0' || c.tier !== undefined ? tramerFree : c.color ? varies[i] && (colorCount[c.color] || 0) >= 2 : varies[i]));
         const idx = comps.map((c, i) => i).filter((i) => free[i]);
         const fixedTotal = maxTotal(w0.map((v, i) => (free[i] ? 0 : v)), comps);
+        // Önemli bileşenlere alt sınır; hepsi birden serbest puanın %60'ını geçmesin
+        const room = S - fixedTotal;
+        let fl = idx.map((i) => (important.includes(comps[i].key) && floorable(comps[i]) ? Math.round(IMPORTANT_SHARE * S) : 0));
+        const flSum = fl.reduce((a, b) => a + b, 0);
+        if (flSum > 0.6 * room) fl = fl.map((v) => (v * 0.6 * room) / flSum);
         const w = w0.slice();
-        if (idx.length && S - fixedTotal > 0) {
-          const wf = fitWeights(X.map((x) => idx.map((i) => x[i])), idx.map((i) => w0[i]), idx.map((i) => comps[i]), S - fixedTotal);
+        if (idx.length && room > 0) {
+          const wf = fitWeights(X.map((x) => idx.map((i) => x[i])), idx.map((i) => w0[i]), idx.map((i) => comps[i]), room, 400, fl);
           idx.forEach((i, j) => { w[i] = wf[j]; });
         }
         comps.forEach((c, i) => setIn(c2, c.path, Math.round(w[i])));
         const a = agree(c2);
         const dist = Math.abs(bk - s.km.bestKm) + Math.abs(wk - s.km.worstKm);
-        if (!best || a > best.after + 1e-9 || (Math.abs(a - best.after) <= 1e-9 && dist < best.dist)) best = { cfg: c2, after: a, dist };
+        if (!best || a > best.after + 1e-9 || (Math.abs(a - best.after) <= 1e-9 && dist < best.dist)) best = { cfg: c2, after: a, dist, free };
       }
     }
     const changes = comps
-      .map((c) => ({ label: c.label, from: c.color ? colorPoints(cfg, c.color) : Number(getIn(cfg, c.path)) || 0, to: getIn(best.cfg, c.path) }))
+      .map((c) => ({ label: c.label, from: c.color ? colorPoints(cfg, c.color) : Number(getIn(cfg, c.path)) || 0, to: getIn(best.cfg, c.path), important: important.includes(c.key) }))
       .concat([
         { label: 'KM tam puan sınırı', from: cfg.scoring.km.bestKm, to: best.cfg.scoring.km.bestKm, km: true },
         { label: 'KM sıfır puan sınırı', from: cfg.scoring.km.worstKm, to: best.cfg.scoring.km.worstKm, km: true },
       ]);
-    return { suggested: best.cfg, before, after: best.after, n: ranked.length, pairs: (ranked.length * (ranked.length - 1)) / 2, changes };
+    // Önemli işaretlenen ama sıraladığın ilanlarda hiç fark yaratmayan (ör. hepsi aynı yıl) bileşen öğrenilemez
+    const imp = comps
+      .map((c, i) => ({ key: c.key, label: c.label, learned: !!best.free[i], points: getIn(best.cfg, c.path) }))
+      .filter((x) => important.includes(x.key));
+    return { suggested: best.cfg, before, after: best.after, n: ranked.length, pairs: (ranked.length * (ranked.length - 1)) / 2, changes, important: imp, floor: Math.round(IMPORTANT_SHARE * S) };
   }
 
   // ---------------------------------------------------------------------------
@@ -1127,7 +1152,7 @@
     DEFAULT_CONFIG, fold, findKeyword, parseTramer, evalHard, evalCriteria, kmScore, tramerScore, scoreListing, ruleFlags, marketModel, computeRows, claudePrompt,
     stableStringify, mergeSame, combineOther, ownCopyOf, manualOf, STATUSES, trackOf, comparePrompt,
     countPhotoAnswer, voteDecided, voteResult, spreadOrder, visionAccuracy, listBadge, visionKey,
-    rangeScore, calibrate, pairAgreement, colorOf,
+    rangeScore, calibrate, pairAgreement, colorOf, importantOf,
     EMPTY_FILTER, filterFacets, rowHas, filterActive, matchFilter, applyFilter, facetCounts,
   };
   if (typeof module !== 'undefined' && module.exports) {
@@ -2107,6 +2132,7 @@
     .chip.yes { background: var(--good); border-color: var(--good); color: #fff; }
     .chip.no { background: var(--bad); border-color: var(--bad); color: #fff; }
     .chip.zero { opacity: .55; }
+    .calib .imp { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0 4px; }
     textarea { width: 100%; min-height: 55vh; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--bg2);
       color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
     .chart text { fill: var(--muted); font-size: 11px; }
@@ -2647,6 +2673,15 @@
 
   // ----- Benim sıralamam: elle sırala, o sıralamayı veren puanları bul, genel listeye uygula -----
   const MIN_CALIB = 8; // bundan az ilanla öneri gürültülü
+
+  // "Önemli" düğmeleri: KM, fiyat, model yılı ve kriterler (tramer ve renkler işaretlenemez)
+  function impChips(cfg) {
+    const on = importantOf(cfg);
+    return calibComponents(cfg)
+      .filter(floorable)
+      .map((c) => `<button class="chip ${on.includes(c.key) ? 'yes' : ''}" data-important="${esc(c.key)}" title="${on.includes(c.key) ? 'Önemli. Tıkla: sıralamadan öğrenilsin' : 'Tıkla: önemli say'}">${on.includes(c.key) ? '★ ' : ''}${esc(c.label)}</button>`)
+      .join('');
+  }
   function renderMyRank(result) {
     const all = state.allCache || loadAllListings();
     const cfg = loadConfig();
@@ -2655,6 +2690,8 @@
     const generalPos = new Map();
     result.passed.forEach((r, i) => generalPos.set(String(r.l.id), i + 1));
     const cal = calibrate(all, order, cfg);
+    // Önemli işaretlemenin uyuma maliyeti: işaretsiz hesapla karşılaştır
+    const calFree = cal && importantOf(cfg).length ? calibrate(all, order, cfg, { important: [] }) : null;
     const sugScore = cal ? new Map(order.map((id) => [id, scoreListing(all[id], cal.suggested).total])) : null;
     const sugPos = sugScore ? new Map([...order].sort((a, b) => sugScore.get(b) - sugScore.get(a)).map((id, i) => [id, i + 1])) : null;
     const pct = (x) => (x == null ? '–' : '%' + Math.round(x * 100));
@@ -2666,12 +2703,16 @@
       html += `<div class="calib"><div>Sıraladığın ${cal.n} ilanın ${cal.pairs} ikilisinde puanların seninle aynı sırayı verme oranı:</div>
         <div><span class="big">${pct(cal.before)}</span> şimdiki ayarlarla → <span class="big ${better ? 'good' : ''}">${pct(cal.after)}</span> önerilen ayarlarla</div>
         ${cal.n < MIN_CALIB ? `<div class="warn">Öneri için en az ${MIN_CALIB} ilan sıralamanı öneririm; az ilanla hesap rastlantısal farklara takılabilir.</div>` : ''}
+        <div class="imp"><span>Önemli bulduğun bileşenler:</span>${impChips(cfg)}</div>
+        <div class="muted">İşaretlediğin her bileşen toplam puanın en az %${Math.round(IMPORTANT_SHARE * 100)}'unu (${cal.floor} puan) alır, kalan puanlar sıralamandan öğrenilir. Az ilanla sıralama bir bileşenin ne kadar önemli olduğunu tek başına söyleyemeyebilir; burada sen söylersin.</div>
+        ${calFree && calFree.after > cal.after + 1e-9 ? `<div class="muted">Önemli işaretlemeseydin uyum ${pct(calFree.after)} olurdu; aradaki fark, önemli dediğin bileşenlere ayrılan pay yüzünden sıralamanla ters düşen ikililer.</div>` : ''}
+        ${cal.important.filter((x) => !x.learned).map((x) => `<div class="warn">${esc(x.label)} sıraladığın ilanlarda hep aynı, öğrenilemedi. Sıralamana farklı ${x.key === 'year' ? 'model yıllarından' : 'değerlerde'} ilan ekle.</div>`).join('')}
         <div class="bar" style="margin:8px 0 0"><button class="primary" data-action="rank-apply" ${better ? '' : 'disabled'}>Ayarları Genel Listeye Uygula</button>
         <button data-action="rank-clear">Sıralamayı temizle</button><span class="muted" data-status>${esc(state.status)}</span></div></div>`;
       const changed = cal.changes.filter((c) => c.from !== c.to);
       html += `<details ${state.calibOpen ? 'open' : ''}><summary data-calib-toggle>Önerilen puanlar (${changed.length} değişiklik)</summary>
         <table class="chg"><thead><tr><th>Bileşen</th><th class="num">Şimdi</th><th class="num">Önerilen</th></tr></thead><tbody>${cal.changes
-          .map((c) => `<tr class="${c.from !== c.to ? '' : 'muted'}"><td>${esc(c.label)}</td><td class="num">${c.km ? fmtNum(c.from) : c.from}</td><td class="num ${c.from !== c.to ? 'to' : ''}">${c.km ? fmtNum(c.to) : c.to}</td></tr>`)
+          .map((c) => `<tr class="${c.from !== c.to ? '' : 'muted'}"><td>${esc(c.label)}${c.important ? ' <span title="Önemli işaretledin">★</span>' : ''}</td><td class="num">${c.km ? fmtNum(c.from) : c.from}</td><td class="num ${c.from !== c.to ? 'to' : ''}">${c.km ? fmtNum(c.to) : c.to}</td></tr>`)
           .join('')}</tbody></table>
         <p class="muted">Fiyat ve model yılı puanı yeni: önerilen ayarda fiyat ${fmtTL(cal.suggested.scoring.price.best)} ve altı tam puan, ${fmtTL(cal.suggested.scoring.price.worst)} ve üstü 0; model yılı ${cal.suggested.scoring.year.best} ve sonrası tam puan, ${cal.suggested.scoring.year.worst} ve öncesi 0. Mutlak filtreler değişmez.</p></details>`;
     } else if (order.length) {
@@ -3036,6 +3077,8 @@
       if (s[k] !== undefined && !['points', 'best', 'worst'].every((f) => typeof s[k][f] === 'number')) throw new Error(`scoring.${k} içinde points, best ve worst sayı olmalı.`);
     }
     if (c.calibration !== undefined && !(c.calibration && Array.isArray(c.calibration.order))) throw new Error('calibration.order bir liste olmalı.');
+    const imp = c.calibration && c.calibration.important;
+    if (imp !== undefined && !(Array.isArray(imp) && imp.every((x) => typeof x === 'string'))) throw new Error('calibration.important bir liste olmalı.');
     const ids = new Set();
     for (const cr of s.criteria) {
       if (!cr.id || !cr.name || typeof cr.points !== 'number') throw new Error('Her kriterde id, name ve points olmalı.');
@@ -3068,6 +3111,16 @@
       return;
     }
     // Ayrıntılar açık/kapalı durumu render sonrası korunsun (açma işini tarayıcı yapar)
+    // Benim sıralamam: bileşeni önemli say / sayma (ayarlarla birlikte diğer bilgisayarlarına gider)
+    const impBtn = e.target.closest('[data-important]');
+    if (impBtn) {
+      const cfg = loadConfig();
+      const k = impBtn.dataset.important;
+      const cur = importantOf(cfg);
+      cfg.calibration = { order: [], ...(cfg.calibration || {}), important: cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k] };
+      saveConfig(cfg);
+      return render();
+    }
     // Özellik düğmesi: var olsun → olmasın → fark etmez
     const facet = e.target.closest('[data-facet]');
     if (facet) {
