@@ -71,7 +71,7 @@ Panelde **Ayarlar** sekmesinden JSON olarak düzenlenir. Değişiklikler tüm ka
 
 `ayarlar-bmw.json` varsayılan ayarlardır. Arkadaşlarına kendi ayarlarını göndermek için **Ayarlar → Dosyaya indir**, yüklemek için **Dosyadan yükle**.
 
-GitHub paylaşımı açıksa ayarlar kendi bilgisayarların arasında eşitlenir: en son kaydedilen geçerli olur. Başka bilgisayarından gelen ayar buradakinin üstüne yazılmadan önce yedeklenir, **Ayarlar → Önceki ayarları geri yükle** ile dönebilirsin.
+GitHub paylaşımı açıksa ayarlar kendi bilgisayarların arasında eşitlenir: en son kaydedilen geçerli olur. Başka bilgisayarından gelen ayar buradakinin üstüne yazılmadan önce yedeklenir, **Ayarlar → Önceki ayarları geri yükle** ile dönebilirsin. `ollama` bölümü (model, açık/kapalı) her bilgisayarda ayrı kalır, eşitlemeyle değişmez. Bozuk bir ayar dosyası gelirse alınmaz, uyarı gösterilir.
 
 ## 5. Ortak veri: bilgisayarların ve arkadaşların arasında
 
@@ -109,7 +109,7 @@ Token'ı paylaşmanın bedeli şu: token'ı olan herkes veri reposunun tamamın�
 - Token sadece o tarayıcıda saklanır. Ayar dosyasına, veri dışa aktarımına ve Claude için kopyalanan metne girmez.
 - Ayarlar (filtreler, puanlar) sadece aynı kişinin bilgisayarları arasında eşitlenir; arkadaşlarınla paylaşılmaz, herkes kendi kriterleriyle sıralar. Bir arkadaşınla aynı ayarları kullanmak için **Ayarlar → Dosyaya indir / Dosyadan yükle**.
 - **Veri → Tüm ilanları sil** sadece o tarayıcıdaki kopyayı siler. GitHub'daki dosyalar durur, otomatik eşitleme açıksa bir sonraki eşitlemede geri gelir.
-- İlan açıklamalarında satıcı adı ya da telefonu geçebildiği için veri reposu **özel** kalmalı.
+- İlan açıklamalarında satıcı adı ya da telefonu geçebildiği için veri reposu **özel** kalmalı. Script her eşitlemede bunu kontrol eder; repo herkese açıksa hiçbir şey göndermez ve uyarır.
 
 ## Bilinen sınırlar
 

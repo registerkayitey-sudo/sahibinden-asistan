@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.6.0
+// @version      0.6.1
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -737,13 +737,23 @@
     scheduleSync();
   }
 
-  // Başka bilgisayardan gelen ayar: buradaki farklıysa önce yedeklenir (Ayarlar → Önceki ayarları geri yükle)
+  // Başka bilgisayardan gelen ayar: buradaki farklıysa önce yedeklenir (Ayarlar → Önceki ayarları geri yükle).
+  // Ollama bölümü (model, açık/kapalı) bilgisayara özel: gelen ayar buradakinin yerine geçmez.
+  // Bozuk bir ayar paneli açılmaz hale getirebileceği için doğrulanmadan alınmaz; alınmadıysa false döner.
   function adoptConfig(rc) {
     const cur = GM_getValue('config', null);
-    if (cur && stableStringify(cur) !== stableStringify(rc.config)) GM_setValue('configBackup', { config: cur, at: Date.now(), from: rc.by || '' });
-    GM_setValue('config', rc.config);
+    const ollama = (cur || DEFAULT_CONFIG).ollama || (rc.config && rc.config.ollama);
+    const next = { ...rc.config, ollama: JSON.parse(JSON.stringify(ollama)) };
+    try {
+      validateConfig(next);
+    } catch (e) {
+      return false;
+    }
+    if (cur && stableStringify(cur) !== stableStringify(next)) GM_setValue('configBackup', { config: cur, at: Date.now(), from: rc.by || '' });
+    GM_setValue('config', next);
     GM_setValue('configAt', rc.at || 0);
     GM_setValue('configBy', rc.by || '');
+    return true;
   }
 
   // ----- Sayfa okuma -----
@@ -1219,6 +1229,7 @@
     if (res && (res.pulledOwn || res.pulledOthers || res.pulledConfig) && state.open && (state.tab === 'sira' || state.tab === 'analiz')) render();
     // Bildirim yeniden çizimden sonra: render() paneli baştan kurduğu için önce gösterilen bildirim silinirdi
     if (res && res.pulledConfig) toast(`Ayarlar ${res.pulledConfig} bilgisayarından güncellendi. Öncekiler Ayarlar sekmesinde yedekte.`, 5000);
+    if (res && res.badConfig) toast(`⚠ ${res.badConfig} bilgisayarından gelen ayarlar bozuk olduğu için alınmadı; buradaki ayarlar kullanılıyor. O bilgisayarda ayarları kontrol edip tekrar kaydet.`, 8000);
   }
 
   async function syncNow(onStep = (m) => showSync('☁ ' + m)) {
@@ -1236,8 +1247,15 @@
       for (const k of otherKeys()) GM_deleteValue(k);
       meta = { ...meta, own: {}, others: {}, cfgSha: null, cfgAt: null, v: 2, me };
     }
-    const res = { pulledOwn: 0, pulledOthers: 0, pushed: 0, pulledConfig: null, pushedConfig: false };
+    const res = { pulledOwn: 0, pulledOthers: 0, pushed: 0, pulledConfig: null, badConfig: null, pushedConfig: false };
     try {
+      // İlan açıklamalarında satıcı adı ve telefonu geçebilir: veri reposu herkese açıksa hiçbir şey okuma ya da gönderme.
+      // Her eşitlemede bakılır, repo sonradan herkese açık yapılırsa da yakalansın.
+      onStep('veri reposu kontrol ediliyor…');
+      const repoInfo = await gh('GET', `/repos/${s.repo}`);
+      if (!repoInfo || repoInfo.private !== true) {
+        throw new Error(`Veri reposu (${s.repo}) herkese açık. İlan açıklamalarında satıcı bilgileri olabileceği için eşitleme yapılmadı; GitHub'da repoyu Private yap.`);
+      }
       for (let attempt = 1; ; attempt++) {
         onStep('liste alınıyor…');
         const head = (await gh('GET', `/repos/${s.repo}/git/ref/heads/${s.branch}`, null, true)).object.sha;
@@ -1281,8 +1299,8 @@
         if (rcs && rcs !== meta.cfgSha) {
           const rc = await fetchBlobJSON(s.repo, rcs);
           if (rc.config && (rc.at || 0) > (GM_getValue('configAt', 0) || 0)) {
-            adoptConfig(rc);
-            res.pulledConfig = rc.by || '?';
+            if (adoptConfig(rc)) res.pulledConfig = rc.by || '?';
+            else res.badConfig = rc.by || '?';
           }
           meta.cfgSha = rcs;
           meta.cfgAt = rc.at || 0;
@@ -1481,7 +1499,7 @@
 
   let host;
   let root;
-  let state = { open: false, tab: 'sira', status: '', openRows: new Set(), tuneOpen: false, rejOpen: false, allCache: null, tuneCfg: null, tuneStart: null, tuneTimer: null };
+  let state = { open: false, tab: 'sira', status: '', openRows: new Set(), tuneOpen: false, rejOpen: false, allCache: null, tuneCfg: null, tuneStart: null, tuneTimer: null, tuneDirty: new Map() };
 
   function mount() {
     host = document.createElement('div');
@@ -1649,6 +1667,8 @@
     const sp = tuneSpecs(state.tuneCfg)[i];
     const v = Number(t.value);
     setPath(state.tuneCfg, sp.path, v);
+    const key = tuneKey(state.tuneCfg, sp.path);
+    state.tuneDirty.set(JSON.stringify(key), key);
     const out = root.querySelector(`[data-tune-out="${i}"]`);
     if (out) out.textContent = (sp.fmt || String)(v);
     // Sadece listeyi yeniden çiz; kaydırıcıya dokunma ki sürüklemeye devam edebilesin
@@ -1661,8 +1681,36 @@
   function flushTune() {
     clearTimeout(state.tuneTimer);
     if (!state.tuneCfg) return;
-    saveConfig(state.tuneCfg);
+    applyTuned(state.tuneCfg);
     state.tuneCfg = null;
+  }
+
+  // Kaydırılan alanı ayardaki sıradan bağımsız tutar: kriter id'siyle, tramer basamağı sınırıyla.
+  // Kaydırırken başka bilgisayardan ayar gelirse kriterlerin sırası değişmiş olabilir.
+  function tuneKey(cfg, p) {
+    if (p[1] === 'criteria') return ['scoring', 'criteria', { id: cfg.scoring.criteria[p[2]].id }, ...p.slice(3)];
+    if (p[2] === 'tiers') return ['scoring', 'tramer', 'tiers', { below: cfg.scoring.tramer.tiers[p[3]].below }, ...p.slice(4)];
+    return p;
+  }
+
+  function resolveTuneKey(cfg, k) {
+    const i = k.findIndex((x) => x && typeof x === 'object');
+    if (i < 0) return k;
+    const arr = getPath(cfg, k.slice(0, i));
+    const [[field, value]] = Object.entries(k[i]);
+    const j = Array.isArray(arr) ? arr.findIndex((x) => x && x[field] === value) : -1;
+    return j < 0 ? null : [...k.slice(0, i), j, ...k.slice(i + 1)];
+  }
+
+  // Sadece kaydırılan alanları güncel ayarın üstüne yazar; bu arada başka bilgisayardan gelen ayar kaybolmaz
+  function applyTuned(src) {
+    const cfg = loadConfig();
+    for (const k of state.tuneDirty.values()) {
+      const from = resolveTuneKey(src, k);
+      const to = resolveTuneKey(cfg, k);
+      if (from && to) setPath(cfg, to, getPath(src, from));
+    }
+    saveConfig(cfg);
   }
 
   function renderRanking(result) {
@@ -1985,7 +2033,10 @@
       if (!USER_RE.test(user)) return setStatus('⚠ Kullanıcı adı "efe" ya da "efe-mac" gibi olmalı: küçük harf ve rakam, Türkçe harf yok.');
       if (!REPO_RE.test(repo)) return setStatus('⚠ Veri reposu "hesap/repo-adı" biçiminde olmalı.');
       const prev = loadShare();
-      const include = [...root.querySelectorAll('[data-include]')].filter((x) => x.checked).map((x) => x.dataset.include);
+      // Sadece ekranda listelenenleri güncelle: liste henüz gelmediyse (ilk eşitlemeden önce) eski seçimler kalsın
+      const boxes = [...root.querySelectorAll('[data-include]')];
+      const shown = new Set(boxes.map((x) => x.dataset.include));
+      const include = [...(prev.include || []).filter((u) => !shown.has(u)), ...boxes.filter((x) => x.checked).map((x) => x.dataset.include)];
       const token = field('token').value.trim();
       if (token) GM_setValue('ghToken', token);
       if (personOf(prev.user) !== personOf(user) || prev.repo !== repo) {
@@ -2061,8 +2112,9 @@
       if (!state.tuneStart) return;
       clearTimeout(state.tuneTimer);
       state.tuneCfg = null;
-      saveConfig(state.tuneStart);
+      applyTuned(state.tuneStart);
       state.tuneStart = null;
+      state.tuneDirty = new Map();
       state.status = 'Puanlar ayarlamaya başlamadan önceki haline döndü.';
       return render();
     }
