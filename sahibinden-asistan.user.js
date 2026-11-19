@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.8.0
+// @version      0.9.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -760,6 +760,77 @@
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Arama ve özellik filtresi: "kırmızı koltuk + Shadow + 50.000 km altı" gibi
+  // ---------------------------------------------------------------------------
+  // filter: { q, has: { 'crit:kirmizi': true, 'feat:Hayalet gösterge (HUD)': false, ... }, kmMax, priceMax, yearMin, color, withRejected }
+  // has: true "var olsun" (metinden, fotoğraftan ya da senin kararınla kesin var), false "olmasın" (kesin var olanları çıkar).
+  // Fotoğraf analizi bekleyen ya da doğrulanamayan özellik "var" sayılmaz.
+  const EMPTY_FILTER = { q: '', has: {}, kmMax: null, priceMax: null, yearMin: null, color: '', withRejected: false };
+
+  // Filtrelenebilecek özellikler: olması gereken donanımlar (HUD) ve bütün kriterler (puanı 0 olanlar dahil)
+  function filterFacets(cfg) {
+    return [
+      ...(cfg.hardFilters.requiredFeatures || []).map((f) => ({ key: `feat:${f.name}`, name: f.name })),
+      ...(cfg.scoring.criteria || []).map((c) => ({ key: `crit:${c.id}`, name: c.name })),
+    ];
+  }
+
+  // Satırda özellik var mı: true, false ya da null (bilinmiyor / analiz bekliyor)
+  function rowHas(r, key) {
+    if (key.startsWith('crit:')) {
+      const c = r.score.crit[key.slice(5)];
+      if (!c) return null;
+      return c.met ? true : c.pending ? null : false;
+    }
+    if (key.startsWith('feat:')) {
+      const f = (r.hard.feats || []).find((x) => x.key === key);
+      return f ? f.ok : null;
+    }
+    return null;
+  }
+
+  const filterActive = (f) =>
+    !!f && (!!String(f.q || '').trim() || Object.keys(f.has || {}).length > 0 || f.kmMax != null || f.priceMax != null || f.yearMin != null || !!f.color);
+
+  function matchFilter(r, f) {
+    const l = r.l;
+    const words = fold(f.q || '').split(' ').filter(Boolean);
+    if (words.length) {
+      const text = corpusOf(l) + ' . ' + fold(trackOf(l).note);
+      if (!words.every((w) => text.includes(w))) return false;
+    }
+    for (const [key, want] of Object.entries(f.has || {})) {
+      const v = rowHas(r, key);
+      if (want === true && v !== true) return false;
+      if (want === false && v === true) return false;
+    }
+    if (f.kmMax != null && !(l.km != null && l.km <= f.kmMax)) return false;
+    if (f.priceMax != null && !(l.price != null && l.price <= f.priceMax)) return false;
+    if (f.yearMin != null && !(l.year != null && l.year >= f.yearMin)) return false;
+    if (f.color && (colorOf(l) || {}).key !== f.color) return false;
+    return true;
+  }
+
+  // Filtrenin bakacağı ilanlar: açık olanlar (geçen + doğrulanamayan, istenirse elenenler), puana göre
+  function filterBase(result, f) {
+    const byScore = (a, b) => b.score.total - a.score.total;
+    return [...result.passed, ...result.unsure, ...(f && f.withRejected ? result.rejected : [])].sort(byScore);
+  }
+
+  const applyFilter = (result, f) => filterBase(result, f).filter((r) => matchFilter(r, f));
+
+  // Her özellik düğmesinde: o özellik de "var olsun" denirse kaç ilan kalır (diğer seçimler aynen)
+  function facetCounts(result, f, cfg) {
+    const base = filterBase(result, f);
+    const out = {};
+    for (const x of filterFacets(cfg)) {
+      const g = { ...f, has: { ...(f.has || {}), [x.key]: true } };
+      out[x.key] = base.filter((r) => matchFilter(r, g)).length;
+    }
+    return out;
+  }
+
   // Arama listesindeki rozet: kayıtlı ilanın durumu tek bakışta. dim: satır soluk gösterilsin (elenmiş ya da kapanmış).
   // delta: ilk görüldüğü fiyattan bu yana değişim (TL, düşüş negatif).
   function listBadge(l, cfg) {
@@ -1057,6 +1128,7 @@
     stableStringify, mergeSame, combineOther, ownCopyOf, manualOf, STATUSES, trackOf, comparePrompt,
     countPhotoAnswer, voteDecided, voteResult, spreadOrder, visionAccuracy, listBadge, visionKey,
     rangeScore, calibrate, pairAgreement, colorOf,
+    EMPTY_FILTER, filterFacets, rowHas, filterActive, matchFilter, applyFilter, facetCounts,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = CORE;
@@ -2024,6 +2096,17 @@
     .trow { display: grid; grid-template-columns: minmax(0, 1fr) 120px 92px; align-items: center; gap: 8px; font-size: 12px; }
     .trow input { width: 100%; margin: 0; }
     .trow output { text-align: right; font-variant-numeric: tabular-nums; }
+    .filter { display: grid; gap: 6px; margin-bottom: 10px; }
+    .frow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+    .frow input[type=text], .frow select { font-size: 13px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+    .frow .q { flex: 1 1 240px; min-width: 180px; }
+    .frow .num-in { width: 112px; }
+    .frow label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+    .chip { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+    .chip .n { color: var(--muted); margin-left: 5px; font-variant-numeric: tabular-nums; }
+    .chip.yes { background: var(--good); border-color: var(--good); color: #fff; }
+    .chip.no { background: var(--bad); border-color: var(--bad); color: #fff; }
+    .chip.zero { opacity: .55; }
     textarea { width: 100%; min-height: 55vh; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--bg2);
       color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
     .chart text { fill: var(--muted); font-size: 11px; }
@@ -2077,7 +2160,7 @@
 
   let host;
   let root;
-  let state = { open: false, tab: 'sira', status: '', openRows: new Set(), tuneOpen: false, rejOpen: false, allCache: null, tuneCfg: null, tuneStart: null, tuneTimer: null, tuneDirty: new Map(), noteDrafts: {}, cardOpen: false, currentId: null };
+  let state = { open: false, tab: 'sira', status: '', openRows: new Set(), tuneOpen: false, rejOpen: false, allCache: null, tuneCfg: null, tuneStart: null, tuneTimer: null, tuneDirty: new Map(), noteDrafts: {}, cardOpen: false, currentId: null, filter: null, filterTimer: null };
 
   function mount() {
     host = document.createElement('div');
@@ -2379,6 +2462,18 @@
       state.noteDrafts[e.target.dataset.note] = e.target.value;
       return;
     }
+    const fi = e.target.closest && e.target.closest('[data-filter]');
+    if (fi) {
+      const f = curFilter();
+      const k = fi.dataset.filter;
+      if (k === 'q' || k === 'color') f[k] = fi.value;
+      else if (k === 'withRejected') f[k] = fi.checked;
+      else f[k] = parseNumber(fi.value);
+      saveFilter(f);
+      clearTimeout(state.filterTimer);
+      state.filterTimer = setTimeout(refreshFiltered, k === 'q' ? 150 : 50); // yazarken her harfte değil
+      return;
+    }
     const t = e.target.closest && e.target.closest('[data-tune]');
     if (!t) return;
     if (!state.tuneCfg) state.tuneCfg = loadConfig();
@@ -2438,22 +2533,87 @@
     saveConfig(cfg);
   }
 
+  // ----- Arama ve özellik filtresi (bu bilgisayara özel, eşitlenmez) -----
+  const loadFilter = () => ({ ...EMPTY_FILTER, ...GM_getValue('filter', {}) });
+  const saveFilter = (f) => GM_setValue('filter', f);
+  const curFilter = () => state.filter || (state.filter = loadFilter());
+  const claudeLabel = () => (filterActive(curFilter()) ? 'Claude için kopyala (filtreli)' : 'Claude için kopyala');
+
+  function renderFilter(result) {
+    const f = curFilter();
+    const colors = new Map();
+    for (const r of result.all) {
+      const c = colorOf(r.l);
+      if (c) colors.set(c.key, { name: c.name, n: ((colors.get(c.key) || {}).n || 0) + 1 });
+    }
+    const num = (k, label, ph) => `<label>${label} <input type="text" inputmode="numeric" class="num-in" data-filter="${k}" value="${f[k] == null ? '' : esc(fmtNum(f[k]))}" placeholder="${ph}"></label>`;
+    return `<div class="filter">
+      <div class="frow">
+        <input type="text" class="q" data-filter="q" value="${esc(f.q)}" placeholder="🔍 İlanlarda ara: first edition, melbourne, sunroof…" spellcheck="false" autocomplete="off">
+        ${num('kmMax', 'KM ≤', 'ör. 50.000')}
+        ${num('priceMax', 'Fiyat ≤', 'ör. 2.000.000')}
+        ${num('yearMin', 'Yıl ≥', 'ör. 2021')}
+        <select data-filter="color"><option value="">Renk: hepsi</option>${[...colors.entries()]
+          .sort((a, b) => b[1].n - a[1].n)
+          .map(([k, c]) => `<option value="${esc(k)}" ${f.color === k ? 'selected' : ''}>${esc(c.name)} (${c.n})</option>`)
+          .join('')}</select>
+        <label title="Mutlak filtrelere takılan ilanları da ara"><input type="checkbox" data-filter="withRejected" ${f.withRejected ? 'checked' : ''}> elenenler dahil</label>
+      </div>
+      <div class="frow" data-facets>${facetChips(result)}</div>
+    </div>`;
+  }
+
+  // Özellik düğmeleri: tıkladıkça "var olsun" → "olmasın" → "fark etmez". Sayı: bu özellik de istenirse kaç ilan kalır.
+  function facetChips(result) {
+    const f = curFilter();
+    const cfg = state.tuneCfg || loadConfig();
+    const counts = facetCounts(result, f, cfg);
+    const chips = filterFacets(cfg).map((x) => {
+      const v = (f.has || {})[x.key];
+      const cls = v === true ? 'yes' : v === false ? 'no' : counts[x.key] ? '' : 'zero';
+      const label = v === true ? `✓ ${x.name}` : v === false ? `✗ ${x.name}` : x.name;
+      const tip = v === true ? 'Sadece kesin olanlar (metin, fotoğraf ya da senin kararın). Tıkla: olmasın' : v === false ? 'Bu özelliği kesin olanlar çıkarıldı. Tıkla: fark etmez' : 'Tıkla: var olsun';
+      return `<button class="chip ${cls}" data-facet="${esc(x.key)}" title="${esc(tip)}">${esc(label)}${v === undefined ? `<span class="n">${counts[x.key]}</span>` : ''}</button>`;
+    });
+    return chips.join('') + (filterActive(f) ? '<button class="mini" data-action="filter-clear">Filtreyi temizle</button>' : '');
+  }
+
+  // Filtre değişti: sadece düğmeleri ve listeyi yeniden çiz, yazdığın kutuya dokunma
+  function refreshFiltered() {
+    const result = computeRows(state.allCache || loadAllListings(), state.tuneCfg || loadConfig());
+    const box = root.querySelector('[data-ranking]');
+    if (box) box.innerHTML = rankingBody(result);
+    const fc = root.querySelector('[data-facets]');
+    if (fc) fc.innerHTML = facetChips(result);
+    const cb = root.querySelector('[data-action="claude"]');
+    if (cb) cb.textContent = claudeLabel();
+  }
+
   function renderRanking(result) {
     let html = `<div class="bar">
       <button class="primary" data-action="ai" ${aiRunning ? 'disabled' : ''}>Yerel AI analizini çalıştır</button>
       ${aiRunning ? '<button data-action="ai-stop">Durdur</button>' : ''}
-      <button data-action="claude" ${result.passed.length + result.unsure.length ? '' : 'disabled'}>Claude için kopyala</button>
+      <button data-action="claude" ${result.passed.length + result.unsure.length ? '' : 'disabled'}>${claudeLabel()}</button>
       ${loadCmp().length ? `<button data-tab="kars">Karşılaştır (${loadCmp().length})</button>` : ''}
       <span class="muted" data-status>${esc(state.status)}</span></div>`;
     html += `<details class="tune" ${state.tuneOpen ? 'open' : ''}><summary data-tune-toggle>⚙ Puanları ve filtreleri ayarla</summary>
       <p class="muted">Kaydırdıkça sıralama hemen değişir, ayar kendiliğinden kaydedilir${syncReady() ? ' ve diğer bilgisayarlarına gider' : ''}.
       <button class="mini" data-action="tune-undo" ${state.tuneStart ? '' : 'disabled'}>Başlangıca dön</button></p>${renderTune()}</details>`;
+    html += renderFilter(result);
     return html + `<div data-ranking>${rankingBody(result)}</div>`;
   }
 
   function rankingBody(result) {
     const fromOthers = result.all.filter((r) => r.l._owner).length;
     let html = `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi${result.closed.length ? ` · ${result.closed.length} kapandı` : ''}</p>`;
+    // Filtre açıkken tek liste: filtreye uyanlar, puana göre
+    const f = curFilter();
+    if (filterActive(f)) {
+      const rows = applyFilter(result, f);
+      const pool = result.passed.length + result.unsure.length + (f.withRejected ? result.rejected.length : 0);
+      html += `<h2>Filtreye uyan ${rows.length} ilan <span class="muted">(${pool} ${f.withRejected ? 'açık ilan' : 'geçen ve doğrulanamayan ilan'} içinde, puana göre)</span></h2>`;
+      return html + (rows.length ? table(rows, 0) : '<p class="muted">Bu filtreye uyan ilan yok. Bir seçimi kaldırmayı dene; özellik düğmelerindeki sayılar o özellik de seçilirse kaç ilan kalacağını gösteriyor.</p>');
+    }
     // Takip ettiklerin üstte bir kez gösterilir; alttaki tablolarda tekrar edilmez (aynı ilanın iki not alanı olmasın)
     const tracked = new Set(result.tracked.map((r) => r.l.id));
     const rest = (rows) => rows.filter((r) => !tracked.has(r.l.id));
@@ -2908,6 +3068,19 @@
       return;
     }
     // Ayrıntılar açık/kapalı durumu render sonrası korunsun (açma işini tarayıcı yapar)
+    // Özellik düğmesi: var olsun → olmasın → fark etmez
+    const facet = e.target.closest('[data-facet]');
+    if (facet) {
+      const f = curFilter();
+      const has = { ...(f.has || {}) };
+      const k = facet.dataset.facet;
+      if (has[k] === undefined) has[k] = true;
+      else if (has[k] === true) has[k] = false;
+      else delete has[k];
+      f.has = has;
+      saveFilter(f);
+      return refreshFiltered();
+    }
     if (e.target.closest('summary[data-tune-toggle]')) {
       state.tuneOpen = !state.tuneOpen;
       return;
@@ -3134,8 +3307,19 @@
       if (aiRun) aiRun.cancel = true;
       return setStatus('Durduruluyor, mevcut fotoğraf bitince duracak…');
     }
+    if (action === 'filter-clear') {
+      state.filter = { ...EMPTY_FILTER, has: {} };
+      saveFilter(state.filter);
+      return render();
+    }
     if (action === 'claude') {
-      const text = claudePrompt(computeRows(loadAllListings(), loadConfig()), loadConfig());
+      let result = computeRows(loadAllListings(), loadConfig());
+      if (filterActive(curFilter())) {
+        // Filtre açıksa ekranda gördüğün ilanlar gider
+        const rows = applyFilter(result, curFilter());
+        result = { ...result, passed: rows.filter((r) => r.hard.status === 'gecti'), unsure: rows.filter((r) => r.hard.status === 'belirsiz') };
+      }
+      const text = claudePrompt(result, loadConfig());
       GM_setClipboard(text, 'text');
       return setStatus(`Kopyalandı (~${Math.round(text.length / 3.5 / 1000)}k token). claude.ai'da yeni bir sohbete yapıştır.`);
     }

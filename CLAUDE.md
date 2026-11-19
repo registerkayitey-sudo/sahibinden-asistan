@@ -19,7 +19,7 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 
 - Push edilen her değişiklikte `// @version` artır. Tampermonkey güncellemeleri `@updateURL` (bu reponun `main` dalı) üzerinden sürüme bakarak alır.
 - `DEFAULT_CONFIG` değişirse `ayarlar-bmw.json`'ı da güncelle.
-- Push'tan önce `node --check sahibinden-asistan.user.js` ve `node tests/core.test.js` geçmeli.
+- Push'tan önce `node --check sahibinden-asistan.user.js` ve `node tests/core.test.js` geçmeli. Windows'ta Node `C:\Program Files\nodejs\node.exe` (açık kalan eski kabuklarda PATH'te olmayabilir).
 - Script'i panoya kopyalarken macOS'ta kodlamayı belirt, yoksa Türkçe karakterler bozulur: `LANG=en_US.UTF-8 pbcopy < sahibinden-asistan.user.js`.
 - Sahibinden.com sayfalarına otomatik istek atma, tarama yapma, bot kontrolünü aşmaya çalışma. Script sadece kullanıcının açtığı sayfaları okur; fotoğraflar sadece kullanıcı AI analizini başlatınca `i0.shbdn.com`'dan indirilir.
 
@@ -43,6 +43,13 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
   - HUD fotoğraftan tespit edilemiyor (18 ilanda 0 "evet"; ilan fotoğraflarında torpidonun üstü görünmüyor) ve ilan metninde neredeyse hiç geçmiyor. Güçlü ipucu: işaretlenen ilanlarda First Edition olmayan 218i Gran Coupe M Sport'ların hepsinde (8/8) HUD var, First Edition'larda 3/10.
 - Tarayıcı eklentisinin Ollama'ya erişmesi için `OLLAMA_ORIGINS="chrome-extension://*,moz-extension://*,safari-web-extension://*"` gerekli. Mac'te bir LaunchAgent bunu her açılışta ayarlıyor.
 - Mac: Apple M5, 16 GB RAM. Windows: AMD RX 6800 (16 GB VRAM).
+
+## Arama ve özellik filtresi
+
+- Saf mantık: `matchFilter`, `applyFilter`, `facetCounts`, `rowHas` (testli). Filtre `{ q, has, kmMax, priceMax, yearMin, color, withRejected }`; `has` anahtarları `crit:<id>` ve `feat:<ad>`, değer `true` (var olsun) ya da `false` (olmasın).
+- "Var" sadece kesin olandır (`met` ya da donanımda `ok === true`); fotoğraf analizi bekleyen `null` sayılır, "var olsun"a girmez, "olmasın"dan çıkmaz.
+- Filtre GM'de `filter` anahtarında, bilgisayara özel; eşitlenmez. Filtre açıkken sıralama tek tablo olur ve Claude metni sadece filtredekileri alır.
+- Yazarken liste ve düğmeler yeniden çizilir (`refreshFiltered`), giriş kutuları çizilmez ki odak kaybolmasın.
 
 ## Benim sıralamam (tersten puanlama)
 

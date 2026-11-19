@@ -214,6 +214,39 @@ eq('renk puanı dökümde', A.scoreListing(COL.k0, hiddenC).lines.find((x) => x.
 eq('ikili uyum', A.pairAgreement([{ s: 3 }, { s: 2 }, { s: 2 }], (x) => x.s), (1 + 1 + 0.5) / 3);
 eq('rangeScore yönden bağımsız', [A.rangeScore(2100000, { points: 10, best: 1800000, worst: 2400000 }), A.rangeScore(2022, { points: 10, best: 2024, worst: 2020 })], [5, 5]);
 
+// Arama ve özellik filtresi
+const FL = (id, desc, km, extra = {}) => ({
+  id, url: 'https://www.sahibinden.com/ilan/' + id, title: 'BMW 218i Gran Coupe ' + id, price: 2000000, year: 2021, km,
+  info: { Renk: 'Siyah' }, features: [], description: 'Hayalet gösterge. Tramer yok. ' + desc,
+  parts: { 'Tavan': 'orijinal', 'Motor Kaputu': 'orijinal' }, images: [], ...extra,
+});
+const FLS = {
+  a: FL('a', 'Kırmızı deri koltuk, Shadow paket, first edition', 40000),
+  b: FL('b', 'Kırmızı deri koltuk', 60000),
+  c: FL('c', 'Shadow paket', 30000, { info: { Renk: 'Beyaz' } }),
+  d: FL('d', '', 20000), // kırmızı koltuk fotoğraf analizi bekliyor
+  e: FL('e', 'Kırmızı deri koltuk', 45000, { price: 2600000 }), // fiyat filtresine takılır: elendi
+  f: FL('f', 'Kırmızı deri koltuk', 50000, { manual: { 'crit:kirmizi': { v: false, at: 1 } } }), // metinde var ama sen "yok" dedin
+};
+const fr = A.computeRows(FLS, cfg);
+const fids = (f) => A.applyFilter(fr, { ...A.EMPTY_FILTER, ...f }).map((r) => r.l.id).sort();
+eq('filtre: boş filtre etkin değil', A.filterActive(A.EMPTY_FILTER), false);
+eq('filtre: kırmızı koltuk', fids({ has: { 'crit:kirmizi': true } }), ['a', 'b']);
+eq('filtre: kırmızı + shadow + 50 bin km altı', fids({ has: { 'crit:kirmizi': true, 'crit:shadow': true }, kmMax: 50000 }), ['a']);
+eq('filtre: kırmızı olmasın (bilinmeyen kalır)', fids({ has: { 'crit:kirmizi': false } }), ['c', 'd', 'f']);
+eq('filtre: analiz bekleyen "var" sayılmaz', A.rowHas(fr.all.find((r) => r.l.id === 'd'), 'crit:kirmizi'), null);
+eq('filtre: elle "yok" metni ezer', A.rowHas(fr.all.find((r) => r.l.id === 'f'), 'crit:kirmizi'), false);
+eq('filtre: elenenler dahil', fids({ has: { 'crit:kirmizi': true }, withRejected: true }), ['a', 'b', 'e']);
+eq('filtre: metin, Türkçe harf ve büyük harf fark etmez', fids({ q: 'FIRST edıtıon' }), ['a']);
+eq('filtre: metinde her kelime geçmeli', fids({ q: 'shadow kırmızı' }), ['a']);
+eq('filtre: renk', fids({ color: 'beyaz' }), ['c']);
+eq('filtre: km ve yıl', fids({ kmMax: 40000, yearMin: 2021 }), ['a', 'c', 'd']);
+eq('filtre: fiyat', fids({ priceMax: 1999999 }), []);
+eq('filtre: HUD var', fids({ has: { 'feat:Hayalet gösterge (HUD)': true } }), ['a', 'b', 'c', 'd', 'f']);
+const fc = A.facetCounts(fr, { ...A.EMPTY_FILTER, kmMax: 50000 }, cfg);
+eq('filtre: düğme sayıları diğer seçimlerle', [fc['crit:kirmizi'], fc['crit:shadow']], [1, 2]);
+eq('filtre: sıra puana göre', A.applyFilter(fr, { ...A.EMPTY_FILTER, kmMax: 60000 }).map((r) => Math.round(r.score.total)).every((s, i, a) => i === 0 || a[i - 1] >= s), true);
+
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));
 eq('ayarlar-bmw.json = DEFAULT_CONFIG', require('util').isDeepStrictEqual(fileCfg, A.DEFAULT_CONFIG), true);
