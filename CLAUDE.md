@@ -34,10 +34,22 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 
 ## Yerel AI
 
-- Model `gemma4:12b`. İstekler `think: false` ile gidiyor; düşünme modu cevabı yaklaşık 5 kat yavaşlatıyor.
-- Fotoğraf başına tek çağrı: model hem fotoğrafın türünü (`view`) hem soruların cevabını verir. Kriterin `views` listesi varsa oy sadece o türlerden sayılır (`countPhotoAnswer`). Fotoğraflar `spreadOrder` ile galeriye yayılarak seçilir; sorular netleşince (`voteDecided`) erken durur. İsabet, Var/Yok kararlarıyla ölçülür (`visionAccuracy`); soru değiştirirken önce bu tabloya bak.
+- Model `gemma4:12b-it-qat` (GGUF, llama.cpp). Etiketsiz `gemma4:12b` Mac'te MLX ile açılıyor, 16 GB'lık Mac'te 16 GB bellek tuttu ve takasa düşürdü; QAT 9,4 GB, fotoğraf başına ~0,6 sn, jantta da daha isabetli. İstekler `think: false` ile gidiyor; düşünme modu cevabı yaklaşık 5 kat yavaşlatıyor. Flash attention'ı açma (Gemma 4'te Apple Silicon'da takılma hatası bildirilmiş). Mac'te LaunchAgent `OLLAMA_KEEP_ALIVE=1m` da ayarlıyor.
+- Fotoğraf başına tek çağrı: model hem fotoğrafın türünü (`view`) hem soruların cevabını verir. Kriterin `views` listesi varsa oy sadece o türlerden sayılır (`countPhotoAnswer`). Fotoğraflar `spreadOrder` ile galeriye yayılarak seçilir; sorular netleşince (`voteDecided`) erken durur. İsabet, Var/Yok kararlarıyla ölçülür (`visionAccuracy`); soru değiştirirken önce bu tabloya bak. Kriterde `referenceImages` varsa o kriter ayrı bir çağrıda örnek fotoğrafla karşılaştırılır (`referencePrompt`, iki görsel: önce örnek, sonra ilan fotoğrafı); örnek GM'de `ornek:<url>` anahtarıyla saklanır. Sonuçlar `visionKey(c)` (soru + örnek) ile eşleşir; soru ya da örnek değişince eski sonuçlar sayılmaz.
+- Gerçek veriyle ölçüm (Kasım 2026; işaretlenmiş ilanların fotoğrafları yerelde, `exp.py` ile):
+  - Eski jant sorusu ("554M mi?") + MLX modeli: 36 ilanın 32'sine "evet", işaretlenen 17 ilanda %53. Neden: kullanıcı **tamamen siyah** 554M istiyor; çift renkli (parlak yüzlü) aynı tasarım "yok". Soru artık rengi açıkça söylüyor.
+  - QAT modeliyle, script'teki haliyle (fotoğraf türü aynı çağrıda, "en az 1 evet ve %25" kuralı): **renk dahil yeni düz soru %88 (15/17)**, örnek fotoğrafla karşılaştırma %76 (13/17, 3 yanlış "var"). Bu yüzden varsayılan örneksiz; örnek fotoğraf isteğe bağlı (📷 örnek yap). Çoğunluk kuralı gerçek pozitifleri kaçırıyordu: özellik birkaç fotoğrafta seçilebiliyor, diğerleri "hayır" diyor. Örneklem küçük (17 ilan); isabet tablosuyla izlemeye devam et.
+  - Siyah ızgara Shadow kararlarıyla 8/8 tutarlı.
+  - HUD fotoğraftan tespit edilemiyor (18 ilanda 0 "evet"; ilan fotoğraflarında torpidonun üstü görünmüyor) ve ilan metninde neredeyse hiç geçmiyor. Güçlü ipucu: işaretlenen ilanlarda First Edition olmayan 218i Gran Coupe M Sport'ların hepsinde (8/8) HUD var, First Edition'larda 3/10.
 - Tarayıcı eklentisinin Ollama'ya erişmesi için `OLLAMA_ORIGINS="chrome-extension://*,moz-extension://*,safari-web-extension://*"` gerekli. Mac'te bir LaunchAgent bunu her açılışta ayarlıyor.
 - Mac: Apple M5, 16 GB RAM. Windows: AMD RX 6800 (16 GB VRAM).
+
+## Benim sıralamam (tersten puanlama)
+
+- Kullanıcının elle sıraladığı ilan id'leri `config.calibration.order`'da (ayarlarla eşitlenir).
+- `calibrate(listings, order, cfg)`: puan = Σ ağırlık × özellik (0..1, `calibFeatures`). Sıralamadaki her ikili bir kısıt; lojistik sıralama kaybı + şimdiki ağırlıklara zayıf çekim, izdüşümlü gradyan inişi (`fitWeights`, `projectWeights`): ağırlık ≥ 0, toplam puan sabit, tramer basamakları monoton. KM sınırları küçük bir ızgarada aranır. Sıralanan ilanlarda hiç değişmeyen bileşenler sabit tutulur; yoksa toplam puanı korurken boşalan puanı bilgisiz bileşenler kapıyordu (test var).
+- Renk (`scoring.colors`, `colorOf`): ilanın "Renk" alanının ana rengi; renk başına puan, toplam puana sadece en yükseği sayılır (`maxTotal`). Kalibrasyon sıralanan ilanlarda en az 2 kez geçen renkleri öğrenir.
+- Ölçüt: ikili uyum (`pairAgreement`). Sentetik testte gizli tercih (fiyat ağırlıklı) 25 ilandan %97 uyumla geri bulunuyor; 6 ilanla gürültülü, arayüz 8'den azında uyarıyor.
 
 ## GitHub eşitlemesi
 

@@ -41,7 +41,7 @@ eq('hard fail kaput', A.evalHard({ ...base, parts: { ...base.parts, 'Motor Kaput
 eq('hard unsure hud', A.evalHard({ ...base, features: [] }, cfg).status, 'belirsiz');
 eq('hard unsure parts', A.evalHard({ ...base, parts: {} }, cfg).unknowns.map((u) => u.key), ['parts']);
 eq('km 125000 fails', A.evalHard({ ...base, km: 125000 }, cfg).status, 'elendi');
-const q = (id) => cfg.scoring.criteria.find((c) => c.id === id).vision;
+const q = (id) => A.visionKey(cfg.scoring.criteria.find((c) => c.id === id)); // soru + örnek fotoğraf
 const withVision = { ...base, ai: { vision: { jant: { question: q('jant'), yes: 2, no: 0, result: true }, izgara: { question: q('izgara'), yes: 1, no: 1, result: true } } } };
 eq('shadow+jant via vision', Math.round(A.scoreListing(withVision, cfg).total - s.total), 30);
 eq('flags inconsist', A.ruleFlags({ ...base, description: 'kaputta lokal boya var' }, cfg, h), ['Açıklamada lokal boya geçiyor', 'Motor Kaputu: boya listesi "orijinal" diyor ama açıklama çelişiyor']);
@@ -109,8 +109,9 @@ A.countPhotoAnswer(vv, { view: 'interior', kirmizi: { visible: false, answer: tr
 eq('görünmüyorsa oy yok', vv.kirmizi, { yes: 0, no: 0 });
 eq('karar: 2 evet', A.voteDecided({ yes: 2, no: 0 }), true);
 eq('karar: 2 evet 1 hayır yetmez', A.voteDecided({ yes: 2, no: 1 }), false);
-eq('karar: 3 hayır', A.voteDecided({ yes: 0, no: 3 }), true);
-eq('sonuç', [A.voteResult({ yes: 0, no: 0 }), A.voteResult({ yes: 1, no: 1 }), A.voteResult({ yes: 1, no: 2 })], [null, true, false]);
+eq('karar: 3 hayır yetmez', A.voteDecided({ yes: 0, no: 3 }), false);
+eq('karar: 5 hayır', A.voteDecided({ yes: 0, no: 5 }), true);
+eq('sonuç: en az 1 evet ve %25', [A.voteResult({ yes: 0, no: 0 }), A.voteResult({ yes: 1, no: 1 }), A.voteResult({ yes: 1, no: 3 }), A.voteResult({ yes: 1, no: 4 }), A.voteResult({ yes: 0, no: 2 })], [null, true, true, false, false]);
 eq('dağınık sıra n=0..2', [A.spreadOrder(0), A.spreadOrder(1), A.spreadOrder(2)], [[], [0], [0, 1]]);
 eq('dağınık sıra n=8', A.spreadOrder(8), [0, 4, 2, 6, 1, 3, 5, 7]);
 eq('dağınık sıra her indeks bir kez', A.spreadOrder(23).slice().sort((a, b) => a - b), Array.from({ length: 23 }, (_, i) => i));
@@ -152,6 +153,66 @@ const reView = A.combineOther(mine2, aliRec, 'ali');
 eq('kopya + ali: kararı adıyla geri gelir', [A.manualOf(reView)['crit:kirmizi'], reView._manualBy['crit:kirmizi'], A.trackOf(reView).by], [true, 'ali', 'ali']);
 eq('kopya kapanmış sayılmaz', A.computeRows({ z: reView }, cfg).closed.length, 0);
 eq('kopya isabete katılmaz', A.visionAccuracy({ z: reView }, cfg).kirmizi.n, 0);
+
+// Örnek fotoğraf değişince eski fotoğraf sonuçları geçersiz olur
+const jc = cfg.scoring.criteria.find((c) => c.id === 'jant');
+const jRef = { ...jc, referenceImages: ['https://i0.shbdn.com/photos/1/2/3/x5_1234567890ab.jpg'] };
+eq('visionKey örneksiz = soru', A.visionKey({ vision: 'Q?' }), 'Q?');
+eq('varsayılan jant örneksiz (düz soru daha isabetli çıktı)', (jc.referenceImages || []).length, 0);
+eq('visionKey örnekle farklı', A.visionKey(jRef) !== A.visionKey(jc), true);
+const cfgRef = JSON.parse(JSON.stringify(cfg)); cfgRef.scoring.criteria = cfgRef.scoring.criteria.map((c) => (c.id === 'jant' ? jRef : c));
+const oldJant = { ...base, ai: { vision: vis('jant', true, 3, 0) } };
+eq('örnek eklenince jant yeniden bekler', A.evalCriteria(oldJant, cfgRef).jant.pending, true);
+eq('örneksiz ayarda eski sonuç geçerli', A.evalCriteria(oldJant, cfg).jant.met, true);
+
+// Tersten puanlama: gizli bir tercihe göre sıralanmış ilanlardan o tercihi geri bulmalı
+let sd = 7; const rnd = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
+const CL = {};
+for (let i = 0; i < 25; i++) {
+  const ms = rnd() < 0.6, red = rnd() < 0.3, tr = rnd() < 0.4 ? 'Tramer yok.' : `Tramer ${Math.round(rnd() * 250)} bin.`;
+  CL['c' + i] = { ...base, id: 'c' + i, title: `BMW 320i ${ms ? 'M Sport' : 'Sport Line'}`, km: Math.round(15000 + rnd() * 100000),
+    price: Math.round(1800000 + rnd() * 600000), year: 2020 + Math.floor(rnd() * 4), description: `${tr} ${red ? 'Kırmızı deri koltuk.' : ''}` };
+}
+const hidden = JSON.parse(JSON.stringify(cfg));
+hidden.scoring.price = { points: 60, best: 1800000, worst: 2400000 };
+hidden.scoring.km.points = 30;
+hidden.scoring.tramer = { noRecordPoints: 10, tiers: [{ below: 100000, points: 6 }, { below: 300000, points: 3 }] };
+hidden.scoring.criteria.find((c) => c.id === 'kirmizi').points = 10;
+const corder = Object.values(CL).sort((a, b) => A.scoreListing(b, hidden).total - A.scoreListing(a, hidden).total).map((l) => l.id);
+const cal = A.calibrate(CL, corder, cfg);
+const cs = cal.suggested.scoring;
+eq('kalibrasyon: uyum artar ve yüksek', [cal.after > cal.before, cal.after >= 0.9], [true, true]);
+eq('kalibrasyon: fiyatın önemini bulur', cs.price.points >= 25, true);
+eq('kalibrasyon: kırmızı koltuğu düşürür', cs.criteria.find((c) => c.id === 'kirmizi').points < 20, true);
+const tot = cs.km.points + cs.tramer.noRecordPoints + cs.price.points + cs.year.points + cs.criteria.reduce((a, c) => a + c.points, 0);
+eq('kalibrasyon: toplam puan korunur (±2)', Math.abs(tot - 150) <= 2, true);
+eq('kalibrasyon: tramer basamak sırası', cs.tramer.noRecordPoints >= cs.tramer.tiers[0].points && cs.tramer.tiers[0].points >= cs.tramer.tiers[1].points, true);
+eq('kalibrasyon: negatif puan yok', JSON.stringify(cs).includes('"points":-'), false);
+eq('kalibrasyon: sıralamada fark yaratmayan bileşen sabit (hiçbirinde Shadow/jant yok)', ['shadow', 'jant', 'izgara'].map((id) => cs.criteria.find((c) => c.id === id).points), ['shadow', 'jant', 'izgara'].map((id) => cfg.scoring.criteria.find((c) => c.id === id).points));
+eq('kalibrasyon: ayar doğrulamasından geçer', !!(cs.km && cs.tramer && Array.isArray(cs.criteria)), true);
+eq('kalibrasyon: 3 ilandan azsa yok', A.calibrate(CL, corder.slice(0, 2), cfg), null);
+eq('kalibrasyon: bilinmeyen id atlanır', A.calibrate(CL, ['yok1', 'yok2', ...corder.slice(0, 2)], cfg), null);
+// Renk tercihi: siyahı seven gizli kullanıcı; tek bir mavi ilan öğrenilmemeli
+eq('ana renk', ['Gri (Gümüş)', 'gri metalik', 'SİYAH', 'Beyaz'].map((v) => A.colorOf({ info: { Renk: v } }).key), ['gri', 'gri', 'siyah', 'beyaz']);
+eq('renk adı', A.colorOf({ info: { Renk: 'kırmızı (metalik)' } }).name, 'Kırmızı');
+eq('renk yoksa', A.colorOf({ info: {} }), null);
+const COL = {};
+const palette = ['Siyah', 'Beyaz', 'Gri'];
+for (let i = 0; i < 18; i++) {
+  COL['k' + i] = { ...CL['c' + i], id: 'k' + i, info: { Renk: i === 17 ? 'Mavi' : palette[i % 3] } };
+}
+const hiddenC = JSON.parse(JSON.stringify(cfg));
+hiddenC.scoring.colors = [{ name: 'Siyah', points: 40 }, { name: 'Gri', points: 15 }];
+const korder = Object.values(COL).sort((a, b) => A.scoreListing(b, hiddenC).total - A.scoreListing(a, hiddenC).total).map((l) => l.id);
+const kc = A.calibrate(COL, korder, cfg);
+const cp2 = Object.fromEntries((kc.suggested.scoring.colors || []).map((c) => [c.name, c.points]));
+eq('renk: siyah > gri > beyaz öğrenilir', cp2.Siyah > cp2.Gri && cp2.Gri >= cp2.Beyaz, true);
+eq('renk: tek geçen mavi öğrenilmez', cp2.Mavi, 0);
+eq('renk: uyum artar', kc.after > kc.before, true);
+eq('renk puanı dökümde', A.scoreListing(COL.k0, hiddenC).lines.find((x) => x.name === 'Renk').points, 40);
+
+eq('ikili uyum', A.pairAgreement([{ s: 3 }, { s: 2 }, { s: 2 }], (x) => x.s), (1 + 1 + 0.5) / 3);
+eq('rangeScore yönden bağımsız', [A.rangeScore(2100000, { points: 10, best: 1800000, worst: 2400000 }), A.rangeScore(2022, { points: 10, best: 2024, worst: 2020 })], [5, 5]);
 
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));

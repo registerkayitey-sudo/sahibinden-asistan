@@ -2,7 +2,7 @@
   "ollama": {
     "enabled": true,
     "url": "http://localhost:11434",
-    "model": "gemma4:12b",
+    "model": "gemma4:12b-it-qat",
     "maxImages": 10
   },
   "hardFilters": {
@@ -40,6 +40,17 @@
       "bestKm": 20000,
       "worstKm": 125000
     },
+    "price": {
+      "points": 0,
+      "best": 1800000,
+      "worst": 2400000
+    },
+    "year": {
+      "points": 0,
+      "best": 2024,
+      "worst": 2020
+    },
+    "colors": [],
     "tramer": {
       "noRecordPoints": 20,
       "tiers": [
@@ -110,7 +121,7 @@
           "y spoke",
           "y kollu"
         ],
-        "vision": "Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?",
+        "vision": "Are the wheels BMW 554M Y-spoke alloy wheels in a fully black finish (not bicolor or polished, not silver)?",
         "views": [
           "wheel",
           "exterior_side",

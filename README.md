@@ -19,11 +19,11 @@ Sahibinden'de gezdiğin araç ilanlarını kaydeder, kendi filtrelerine göre el
 Fotoğraflardan kırmızı koltuk, jant tipi ve ızgara rengini tespit eder, ilan açıklamalarını da özetler.
 
 1. https://ollama.com adresinden Ollama'yı indir ve aç.
-2. Terminalde modeli indir (yaklaşık 7,7 GB, bir kerelik):
+2. Terminalde modeli indir (yaklaşık 7,2 GB, bir kerelik):
    ```bash
-   ollama pull gemma4:12b
+   ollama pull gemma4:12b-it-qat
    ```
-   8 GB RAM'li bir bilgisayarda `gemma3:4b` kullan ve Ayarlar'da `"model": "gemma3:4b"` yap.
+   Çalışırken yaklaşık 9–10 GB bellek kullanır. `gemma4:12b` (etiketsiz) sürümünü kullanma: Mac'te MLX ile açılıyor ve 16 GB'lık bir Mac'in belleğinin tamamını alıyor. 8 GB RAM'li bir bilgisayarda `gemma3:4b` kullan ve Ayarlar'da `"model": "gemma3:4b"` yap.
 3. "Ollama isteği reddetti (403)" hatası alırsan şu komutu çalıştırıp Ollama'yı kapatıp yeniden aç:
    ```bash
    launchctl setenv OLLAMA_ORIGINS "chrome-extension://*,moz-extension://*,safari-web-extension://*"
@@ -56,6 +56,18 @@ Fiyatı değişen ilanları tekrar açarsan asistan eski ve yeni fiyatı uyarı 
 - **Karşılaştırma:** Sıralamada ilanların solundaki kutucuklardan 2–4 ilan seç, **Karşılaştır** sekmesinde yan yana gör. Her satırda en iyi değer (en düşük fiyat, en az km, en yeni yıl, en yüksek puan…) yeşil yazılır. **Bu karşılaştırmayı Claude için kopyala** sadece seçtiğin ilanları notlarınla birlikte kopyalar.
 - GitHub paylaşımı açıksa durum ve notlar diğer bilgisayarlarına da gider. Dahil ettiğin bir arkadaşının durumu ve notu ilanda "(ali)" gibi adıyla görünür ama seninkinin yerine geçmez: ali "vazgeçti" dedi diye ilan senin listenden düşmez.
 
+### Benim sıralamam: önceliklerini puanlara çevir
+
+Puanları tek tek ayarlamak yerine ilanları kendi önceliğine göre sırala, asistan o sıralamayı veren puanları bulsun:
+
+1. **Benim sıralamam** sekmesinde **＋ ekle** ile ilanları listene al, sürükleyerek ya da ↑↓ ile diz: en iyisi en üstte. Hepsini sıralaman gerekmez; 8–15 ilan yeter.
+2. Her değişiklikte asistan, sıraladığın ilanları ikişer ikişer karşılaştırır ve puanların seninle aynı sırayı verme oranını gösterir: "şimdiki ayarlarla %64 → önerilen ayarlarla %91" gibi. **Önerilen puanlar** tablosunda hangi bileşenin kaç puan olması gerektiği yazar (KM, tramer, kriterler, km sınırları; yeni olarak **fiyat**, **model yılı** ve **renk**).
+3. Beğenirsen **Ayarları Genel Listeye Uygula**: önerilen puanlar genel sıralamanın ayarı olur. Önceki ayarlar yedeklenir, **Ayarlar → Önceki ayarları geri yükle** ile dönersin.
+
+**Renk:** hangi rengi ne kadar tercih ettiğini bilmen gerekmez; sıraladıkça ortaya çıkar (ör. Siyah +24, Gri +4, Beyaz 0). Renk ilanın "Renk" alanından okunur, tonlar ana renge toplanır ("Gri (Gümüş)" → Gri). Bir renk ancak sıraladığın ilanlarda en az 2 kez geçiyorsa öğrenilir; tek ilanın yeri renge yüklenmesin diye.
+
+Kurallar: puanlar eksi olmaz, toplam puan aynı kalır, daha az tramer hiçbir zaman daha az puan almaz. Sıraladığın ilanlarda hiç fark yaratmayan bir bileşen (ör. hiçbirinde Shadow yoksa) olduğu gibi kalır; sıralaman onun hakkında bir şey söylemiyor. Mutlak filtreler değişmez. Sıralaman ayarların içinde saklanır ve diğer bilgisayarlarına da gider.
+
 ### Arama sonuçlarında rozetler
 
 Arama listesinde her ilanın başlığının yanında bir rozet çıkar:
@@ -83,6 +95,8 @@ Panelde **Ayarlar** sekmesinden JSON olarak düzenlenir. Değişiklikler tüm ka
 
 - `hardFilters`: Mutlak filtreler. `maxKm` bu değerin altı, `minYear` en az, `maxPrice` en fazla. `originalParts` orijinal olması gereken parçalar. `requiredFeatures` ilan metninde geçmesi gereken donanımlar: `keywords` geçerse var sayılır, sadece `unsureKeywords` içindeki bir ifadenin parçası olarak geçerse sana sorulur.
 - `scoring.km`: `bestKm` ve altı tam puan, `worstKm` ve üstü 0, arası doğrusal.
+- `scoring.price`, `scoring.year`: fiyat ve model yılı puanı; `best` değerde tam puan, `worst` değerde 0, arası doğrusal. Varsayılan 0 puan (Benim sıralamam önerebilir).
+- `scoring.colors`: renk başına puan, ör. `[{ "name": "Siyah", "points": 12 }]`. Listede olmayan renk 0 puan alır.
 - `scoring.tramer`: Kayıt yoksa `noRecordPoints`, yoksa `tiers` içindeki ilk uyan basamak (`below` altı), hiçbiri uymazsa 0. Tramer bilinmiyorsa 0.
 - `scoring.criteria`: Her kriter için:
   - `keywords`: ilan başlığı, bilgileri, donanım listesi ve açıklamasında aranır (Türkçe karakter ve büyük/küçük harf fark etmez).
@@ -136,5 +150,6 @@ Token'ı paylaşmanın bedeli şu: token'ı olan herkes veri reposunun tamamın�
 - **Sayfa yapısı** Kasım 2026 itibarıyla gerçek bir ilanla doğrulandı. Sahibinden sayfa tasarımını değiştirirse veri okuma bozulabilir; ilan kaydedilince çıkan bildirimde puan veya boya bilgisi tuhaf görünürse haber ver.
 - **Tramer** açıklamadan metin olarak okunur. "Tramer 2 parça 30 bin" gibi ifadeleri yakalar ama alışılmadık yazımlar kaçabilir; tramer sütununda `?` görürsen ilanı kendin oku.
 - **Fotoğraf analizi kesin değildir**, özellikle 554M jant gibi ince ayrımlarda. Puanı fotoğraftan gelen kriterler ayrıntılarda "fotoğraf (x evet / y hayır)" olarak işaretlenir; son 10'dakilere kendin de bak. Model her fotoğrafın türünü de söyler (ön, arka, yan, iç mekân, jant) ve oy sadece ilgili türden sayılır (ayarlarda kriterin `views` alanı); kırmızı bir aracın dış fotoğrafı "kırmızı koltuk" oyu veremez. Fotoğraflar galeriye yayılarak seçilir, sorular netleşince analiz erken biter. AI'ın ne kadar isabetli olduğunu **Piyasa analizi → Yerel AI'ın fotoğraf isabeti** tablosunda görürsün: AI'dan sonra Var/Yok ile işaretlediğin kriterler gerçek cevap sayılır.
+- **Örnek fotoğraf (isteğe bağlı):** İnce ayrımlarda soru metni yetmezse bir **örnek fotoğraf** seçebilirsin. (Gerçek ilanlarla yapılan ölçümde jant için rengi açıkça söyleyen düz soru %88 ile örnekle karşılaştırmadan (%76) daha isabetli çıktı; bu yüzden varsayılan olarak kapalı.) Seçmek için: bir ilanda kriteri **Var** diye işaretledikten sonra ayrıntılarda **📷 örnek yap**'a bas ve o ilanın en net fotoğrafına tıkla (ör. jantın yan ya da yakından göründüğü). Yerel AI bundan sonra diğer ilanların fotoğraflarını bu örnekle karşılaştırır. Örnek ayarlara kaydedilir (diğer bilgisayarlarına da gider) ve bir kez indirildikten sonra tarayıcıda saklanır, kaynak ilan kaldırılsa da çalışır. Örneği değiştirince o kriter bütün ilanlarda yeniden analiz edilir. Seçili örnekleri **Ayarlar** sekmesinin üstünde görür, oradan kaldırabilirsin.
 - **Piyasa modeli** sadece yıl ve km'ye bakar, donanım ve hasar farkını hesaba katmaz.
 - Asistan sadece senin açtığın sayfaları okur; otomatik gezinme yapmaz. Sahibinden'in bot kontrolüne takılırsan kontrolü kendin geç ve devam et.

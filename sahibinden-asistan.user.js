@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.7.0
+// @version      0.8.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -30,7 +30,7 @@
     ollama: {
       enabled: true,
       url: 'http://localhost:11434',
-      model: 'gemma4:12b',
+      model: 'gemma4:12b-it-qat', // GGUF; MLX sürümü (gemma4:12b) 16 GB'lık Mac'te belleğin tamamını kullanıyordu
       maxImages: 10,
     },
     hardFilters: {
@@ -50,6 +50,11 @@
     },
     scoring: {
       km: { points: 40, bestKm: 20000, worstKm: 125000 },
+      // Fiyat ve model yılı: best değerde tam puan, worst değerde 0. Varsayılan 0 puan; "Benim sıralamam" önerebilir.
+      price: { points: 0, best: 1800000, worst: 2400000 },
+      year: { points: 0, best: 2024, worst: 2020 },
+      // Renk başına puan: [{ name: 'Siyah', points: 10 }, …]. Boş: renk puanlamaya girmez; Benim sıralamam öğrenir.
+      colors: [],
       tramer: {
         noRecordPoints: 20,
         tiers: [
@@ -73,7 +78,7 @@
         {
           id: 'jant', name: '554M Y-Spoke jant', points: 10,
           keywords: ['554m', '554 m', 'y-spoke', 'y spoke', 'y kollu'],
-          vision: 'Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?',
+          vision: 'Are the wheels BMW 554M Y-spoke alloy wheels in a fully black finish (not bicolor or polished, not silver)?',
           views: ['wheel', 'exterior_side', 'exterior_front', 'exterior_rear'],
         },
         {
@@ -332,11 +337,12 @@
       const o = override(c.id);
       if (o) { res[c.id] = o; continue; }
       const kw = findKeyword(corpus, c.keywords);
-      const v = vision[c.id];
+      // Soru ya da örnek fotoğraf değiştiyse eski sonuç sayılmaz, yeniden analiz bekler
+      const v = vision[c.id] && vision[c.id].question === visionKey(c) ? vision[c.id] : null;
       const vTxt = v ? (v.result == null ? 'fotoğraflarda görülemedi, kendin bak' : `fotoğraf (${v.yes} evet / ${v.no} hayır)`) + (visionBy[c.id] ? ' · ' + visionBy[c.id] : '') : null;
       if (kw) res[c.id] = { met: true, via: `metin: "${kw}"` };
       else if (v && v.result === true) res[c.id] = { met: true, via: vTxt };
-      else if (c.vision && !(v && v.question === c.vision)) res[c.id] = { met: false, pending: true, via: 'fotoğraf analizi bekliyor' };
+      else if (c.vision && !v) res[c.id] = { met: false, pending: true, via: 'fotoğraf analizi bekliyor' };
       else res[c.id] = { met: false, via: vTxt };
     }
     for (const c of crit.filter((c) => c.allOf)) {
@@ -362,6 +368,20 @@
     return (c.points * (c.worstKm - km)) / (c.worstKm - c.bestKm);
   }
 
+  // Ana renk: "Gri (Gümüş)", "gri metalik" → "gri" (karşılaştırma anahtarı) ve "Gri" (görünen ad)
+  function colorOf(l) {
+    const key = Object.keys((l && l.info) || {}).find((k) => fold(k) === 'renk');
+    const raw = key ? String(l.info[key]).replace(/\(.*?\)/g, ' ').trim().split(/\s+/)[0] || '' : '';
+    return raw ? { key: fold(raw), name: raw.charAt(0).toLocaleUpperCase('tr') + raw.slice(1).toLocaleLowerCase('tr') } : null;
+  }
+  const colorPoints = (cfg, key) => ((cfg.scoring.colors || []).find((c) => fold(c.name) === key) || {}).points || 0;
+
+  // best değerde tam puan, worst değerde 0, arası doğrusal (km ve fiyatta düşük, yılda yüksek iyidir; yön fark etmez)
+  function rangeScore(v, c) {
+    if (v == null || !c || !c.points || c.best === c.worst) return 0;
+    return c.points * Math.max(0, Math.min(1, (v - c.worst) / (c.best - c.worst)));
+  }
+
   function tramerScore(amount, c) {
     if (amount == null) return 0;
     if (amount === 0) return c.noRecordPoints;
@@ -379,6 +399,18 @@
         name: 'Tramer', points: tramerScore(tramer.amount, s.tramer), max: s.tramer.noRecordPoints,
         via: tramer.amount == null ? 'bilinmiyor' : (tramer.amount === 0 ? 'kayıt yok' : fmtTL(tramer.amount)) + ` (${tramer.source}${tramer.note ? '; ' + tramer.note : ''})`,
       },
+      ...(s.price && s.price.points > 0
+        ? [{ name: 'Fiyat', points: rangeScore(l.price, s.price), max: s.price.points, via: l.price == null ? 'okunamadı' : `${fmtTL(l.price)} (${fmtTL(s.price.best)} ve altı tam puan, ${fmtTL(s.price.worst)} ve üstü 0)` }]
+        : []),
+      ...(s.year && s.year.points > 0
+        ? [{ name: 'Model yılı', points: rangeScore(l.year, s.year), max: s.year.points, via: l.year == null ? 'okunamadı' : `${l.year} (${s.year.best} ve sonrası tam puan, ${s.year.worst} ve öncesi 0)` }]
+        : []),
+      ...((s.colors || []).some((c) => c.points > 0)
+        ? (() => {
+          const col = colorOf(l);
+          return [{ name: 'Renk', points: col ? colorPoints(cfg, col.key) : 0, max: Math.max(...s.colors.map((c) => c.points || 0)), via: col ? col.name : 'okunamadı' }];
+        })()
+        : []),
       ...(s.criteria || []).filter((c) => c.points > 0).map((c) => ({
         name: c.name, points: crit[c.id].met ? c.points : 0, max: c.points, via: crit[c.id].via, pending: crit[c.id].pending,
         // Metinde birebir geçen kriterde sorulacak bir şey yok; gerisini elle doğrulayabilirsin.
@@ -554,9 +586,14 @@
     return view;
   }
 
-  // Yeterince net mi? Öyleyse kalan fotoğraflara bakmaya gerek yok.
-  const voteDecided = (v) => (v.yes >= 2 && v.yes > 2 * v.no) || (v.no >= 3 && v.yes === 0);
-  const voteResult = (v) => (v.yes + v.no === 0 ? null : v.yes >= 1 && v.yes >= v.no);
+  // Görsel kriterin "sorusu": soru metni + örnek fotoğraflar. Biri değişirse eski fotoğraf sonuçları geçersiz olur.
+  const visionKey = (c) => String(c.vision || '') + ((c.referenceImages || []).length ? ` [örnek: ${c.referenceImages.join(' ')}]` : '');
+
+  // Sonuç: en az bir "evet" ve oyların en az %25'i. İnce ayrımlarda (jant) özellik sadece birkaç fotoğrafta
+  // seçilebiliyor, diğerleri "hayır" diyor; çoğunluk kuralı gerçek pozitifleri kaçırıyordu (gerçek veriyle ölçüldü).
+  const voteResult = (v) => (v.yes + v.no === 0 ? null : v.yes >= 1 && v.yes * 3 >= v.no);
+  // Yeterince net mi? Öyleyse kalan fotoğraflara bakmaya gerek yok. "Hayır" için daha çok kanıt gerekir.
+  const voteDecided = (v) => (v.yes >= 2 && v.yes > 2 * v.no) || (v.no >= 5 && v.yes === 0);
 
   // Fotoğraf sırası: galerinin başı, ortası, çeyrekleri… İlk birkaç fotoğraf hep aynı açıdan
   // (genelde ön) olduğu için sırayla gitmek yerine galeriyi baştan yayarak örnekler.
@@ -591,7 +628,7 @@
       for (const c of (cfg.scoring.criteria || []).filter((x) => x.vision)) {
         const m = man['crit:' + c.id];
         const v = vis[c.id];
-        if (typeof m !== 'boolean' || manualBy(l, 'crit:' + c.id) || !v || v.question !== c.vision) continue;
+        if (typeof m !== 'boolean' || manualBy(l, 'crit:' + c.id) || !v || v.question !== visionKey(c)) continue;
         const o = out[c.id];
         if (v.result == null) { o.noAnswer++; continue; }
         o.n++;
@@ -745,6 +782,182 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Tersten puanlama: senin sıralamanı en iyi açıklayan puanlar
+  // ---------------------------------------------------------------------------
+  // Puan, bileşen puanlarının toplamı: Σ ağırlık × özellik (0..1). Senin sıralamandaki her ikili (üstteki > alttaki)
+  // bir kısıt; ağırlıklar bu ikililere en çok uyacak şekilde bulunur. Ağırlıklar negatif olmaz, toplam puan aynı kalır,
+  // tramer basamaklarında az tramer hiçbir zaman daha az puan almaz. Sıraladığın ilanlarda fark yaratmayan bir
+  // bileşen (ör. hepsi M Sport) şimdiki değerine yakın kalır.
+  const getIn = (o, p) => p.reduce((x, k) => (x == null ? x : x[k]), o);
+  function setIn(o, p, v) {
+    const parent = getIn(o, p.slice(0, -1));
+    if (parent) parent[p[p.length - 1]] = v;
+  }
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+
+  function calibComponents(cfg) {
+    const s = cfg.scoring;
+    const comps = [
+      { key: 'km', label: 'KM', path: ['scoring', 'km', 'points'] },
+      { key: 'tramer0', label: 'Tramer kaydı yok', path: ['scoring', 'tramer', 'noRecordPoints'] },
+    ];
+    (s.tramer.tiers || []).forEach((t, i) => comps.push({ key: 'tier' + i, label: `Tramer ${fmtNum(t.below)} TL altı`, path: ['scoring', 'tramer', 'tiers', i, 'points'], tier: i }));
+    comps.push({ key: 'price', label: 'Fiyat', path: ['scoring', 'price', 'points'] });
+    comps.push({ key: 'year', label: 'Model yılı', path: ['scoring', 'year', 'points'] });
+    (s.colors || []).forEach((c, i) => comps.push({ key: 'color:' + fold(c.name), label: `Renk: ${c.name}`, path: ['scoring', 'colors', i, 'points'], color: fold(c.name) }));
+    (s.criteria || []).forEach((c, i) => comps.push({ key: 'crit:' + c.id, label: c.name, path: ['scoring', 'criteria', i, 'points'], crit: c.id }));
+    return comps;
+  }
+
+  // İlanın her bileşende aldığı pay (0..1): puan = Σ ağırlık × pay
+  function calibFeatures(l, cfg, comps) {
+    const s = cfg.scoring;
+    const crit = evalCriteria(l, cfg);
+    const tr = parseTramer(l).amount;
+    const tierIdx = tr == null || tr === 0 ? -1 : (s.tramer.tiers || []).findIndex((t) => tr < t.below);
+    return comps.map((c) => {
+      if (c.key === 'km') return kmScore(l.km, { ...s.km, points: 1 });
+      if (c.key === 'tramer0') return tr === 0 ? 1 : 0;
+      if (c.tier !== undefined) return tierIdx === c.tier ? 1 : 0;
+      if (c.key === 'price') return rangeScore(l.price, { ...s.price, points: 1 });
+      if (c.key === 'year') return rangeScore(l.year, { ...s.year, points: 1 });
+      if (c.color) return (colorOf(l) || {}).key === c.color ? 1 : 0;
+      if (c.crit) return crit[c.crit] && crit[c.crit].met ? 1 : 0;
+      return 0;
+    });
+  }
+
+  // Toplam puan: tramer basamakları "kayıt yok"tan fazla olamaz, sayılmaz; bir aracın tek rengi olduğu için
+  // renklerden sadece en yükseği sayılır
+  function maxTotal(w, comps) {
+    let t = 0, col = 0;
+    w.forEach((v, i) => {
+      if (comps[i].tier !== undefined) return;
+      if (comps[i].color) col = Math.max(col, v);
+      else t += v;
+    });
+    return t + col;
+  }
+
+  function projectWeights(w, comps, S) {
+    const out = w.map((v) => Math.max(0, v));
+    const t0 = comps.findIndex((c) => c.key === 'tramer0');
+    let prev = t0 >= 0 ? out[t0] : Infinity;
+    comps.forEach((c, i) => {
+      if (c.tier === undefined) return;
+      out[i] = Math.min(out[i], prev);
+      prev = out[i];
+    });
+    const tot = maxTotal(out, comps);
+    return tot > 0 ? out.map((v) => (v * S) / tot) : out;
+  }
+
+  // Sıralama için lojistik kayıp + şimdiki ağırlıklara hafif çekim, izdüşümlü gradyan inişi
+  function fitWeights(X, w0, comps, S, iters = 400) {
+    const D = [];
+    for (let i = 0; i < X.length; i++) for (let j = i + 1; j < X.length; j++) D.push(X[i].map((v, t) => v - X[j][t]));
+    const wPrior = projectWeights(w0, comps, S);
+    if (!D.length) return wPrior;
+    const k = w0.length;
+    const kappa = 20 / S;
+    const lambda = 0.05 / (S * S); // sadece sıralamanın bir şey söylemediği yönlerde hissedilir
+    let w = wPrior.slice();
+    let lr = S * 0.3;
+    for (let it = 0; it < iters; it++) {
+      const g = new Array(k).fill(0);
+      for (const d of D) {
+        let m = 0;
+        for (let t = 0; t < k; t++) m += w[t] * d[t];
+        const sg = 1 / (1 + Math.exp(Math.min(50, kappa * m)));
+        for (let t = 0; t < k; t++) g[t] -= (kappa * sg * d[t]) / D.length;
+      }
+      for (let t = 0; t < k; t++) g[t] += 2 * lambda * (w[t] - wPrior[t]);
+      w = projectWeights(w.map((v, t) => v - lr * g[t]), comps, S);
+      lr *= 0.993;
+    }
+    return w;
+  }
+
+  // Sıralamadaki ikililerin kaçında puan da aynı sırayı veriyor (eşitlik yarım sayılır)
+  function pairAgreement(ranked, scoreOf) {
+    const sc = ranked.map(scoreOf);
+    let ok = 0, n = 0;
+    for (let i = 0; i < sc.length; i++) {
+      for (let j = i + 1; j < sc.length; j++) {
+        n++;
+        ok += sc[i] > sc[j] + 1e-9 ? 1 : Math.abs(sc[i] - sc[j]) <= 1e-9 ? 0.5 : 0;
+      }
+    }
+    return n ? ok / n : null;
+  }
+
+  // listings: { id: ilan }, order: senin sıraladığın ilan id'leri (en iyi önce)
+  function calibrate(listings, order, cfg) {
+    const ranked = (order || []).map((id) => listings[id]).filter(Boolean);
+    if (ranked.length < 3) return null;
+    const base = clone(cfg);
+    const s = base.scoring;
+    // Fiyat ve yıl puanı hiç tanımlanmamışsa aralığı sıraladığın ilanlardan al
+    const range = (f, lowIsBest) => {
+      const v = ranked.map(f).filter((x) => typeof x === 'number' && isFinite(x));
+      if (!v.length) return { points: 0, best: 0, worst: 0 };
+      return lowIsBest ? { points: 0, best: Math.min(...v), worst: Math.max(...v) } : { points: 0, best: Math.max(...v), worst: Math.min(...v) };
+    };
+    if (!s.price) s.price = range((l) => l.price, true);
+    if (!s.year) s.year = range((l) => l.year, false);
+    // Sıraladığın ilanlarda geçen renkler (henüz puanı olmayanlar 0 ile eklenir)
+    s.colors = (s.colors || []).slice();
+    const colorCount = {};
+    for (const l of ranked) {
+      const col = colorOf(l);
+      if (!col) continue;
+      colorCount[col.key] = (colorCount[col.key] || 0) + 1;
+      if (!s.colors.some((c) => fold(c.name) === col.key)) s.colors.push({ name: col.name, points: 0 });
+    }
+    const comps = calibComponents(base);
+    const w0 = comps.map((c) => Number(getIn(base, c.path)) || 0);
+    const S = maxTotal(w0, comps) || 100;
+    const agree = (c) => pairAgreement(ranked, (l) => scoreListing(l, c).total);
+    const before = agree(cfg);
+    const uniq = (a) => [...new Set(a)];
+    let best = null;
+    for (const bk of uniq([s.km.bestKm, 0, 20000, 40000])) {
+      for (const wk of uniq([s.km.worstKm, 100000, 125000, 150000, 200000])) {
+        if (bk >= wk) continue;
+        const c2 = clone(base);
+        c2.scoring.km.bestKm = bk;
+        c2.scoring.km.worstKm = wk;
+        const X = ranked.map((l) => calibFeatures(l, c2, comps));
+        // Sıraladığın ilanlarda hiç fark yaratmayan bileşen (ör. hiçbirinde Shadow yok) hakkında sıralaman bir şey
+        // söylemiyor: şimdiki değerinde kalır, toplam puan sadece bilgi çıkan bileşenler arasında yeniden dağıtılır.
+        // Tramer kaydı yok ve basamakları birlikte serbest ya da birlikte sabit.
+        const varies = comps.map((c, i) => X.some((x) => Math.abs(x[i] - X[0][i]) > 1e-9));
+        const tramerFree = comps.some((c, i) => (c.key === 'tramer0' || c.tier !== undefined) && varies[i]);
+        // Bir renk ancak sıraladığın ilanlarda en az 2 kez geçiyorsa öğrenilir (tek ilanın yeri renge yüklenmesin)
+        const free = comps.map((c, i) => (c.key === 'tramer0' || c.tier !== undefined ? tramerFree : c.color ? varies[i] && (colorCount[c.color] || 0) >= 2 : varies[i]));
+        const idx = comps.map((c, i) => i).filter((i) => free[i]);
+        const fixedTotal = maxTotal(w0.map((v, i) => (free[i] ? 0 : v)), comps);
+        const w = w0.slice();
+        if (idx.length && S - fixedTotal > 0) {
+          const wf = fitWeights(X.map((x) => idx.map((i) => x[i])), idx.map((i) => w0[i]), idx.map((i) => comps[i]), S - fixedTotal);
+          idx.forEach((i, j) => { w[i] = wf[j]; });
+        }
+        comps.forEach((c, i) => setIn(c2, c.path, Math.round(w[i])));
+        const a = agree(c2);
+        const dist = Math.abs(bk - s.km.bestKm) + Math.abs(wk - s.km.worstKm);
+        if (!best || a > best.after + 1e-9 || (Math.abs(a - best.after) <= 1e-9 && dist < best.dist)) best = { cfg: c2, after: a, dist };
+      }
+    }
+    const changes = comps
+      .map((c) => ({ label: c.label, from: c.color ? colorPoints(cfg, c.color) : Number(getIn(cfg, c.path)) || 0, to: getIn(best.cfg, c.path) }))
+      .concat([
+        { label: 'KM tam puan sınırı', from: cfg.scoring.km.bestKm, to: best.cfg.scoring.km.bestKm, km: true },
+        { label: 'KM sıfır puan sınırı', from: cfg.scoring.km.worstKm, to: best.cfg.scoring.km.worstKm, km: true },
+      ]);
+    return { suggested: best.cfg, before, after: best.after, n: ranked.length, pairs: (ranked.length * (ranked.length - 1)) / 2, changes };
+  }
+
+  // ---------------------------------------------------------------------------
   // Claude için özet
   // ---------------------------------------------------------------------------
   function configSummary(cfg) {
@@ -754,6 +967,10 @@
       `Mutlak filtreler: ${fmtNum(h.maxKm)} km altı, en az ${h.minYear} model, en fazla ${fmtTL(h.maxPrice)}, orijinal olması gereken parçalar: ${h.originalParts.join(', ')}; olması gereken donanım: ${h.requiredFeatures.map((f) => f.name).join(', ')}.`,
       `Puanlama: KM ${s.km.points} puan (${fmtNum(s.km.bestKm)} km ve altı tam puan, ${fmtNum(s.km.worstKm)} km'de 0); tramer ${s.tramer.noRecordPoints} puan (kayıt yok tam puan${s.tramer.tiers.map((t) => `, ${fmtNum(t.below)} TL altı ${t.points}`).join('')}, üstü 0)`,
     ];
+    if (s.price && s.price.points > 0) lines.push(`Fiyat: ${s.price.points} puan (${fmtTL(s.price.best)} ve altı tam puan, ${fmtTL(s.price.worst)} ve üstü 0)`);
+    if (s.year && s.year.points > 0) lines.push(`Model yılı: ${s.year.points} puan (${s.year.best} ve sonrası tam puan, ${s.year.worst} ve öncesi 0)`);
+    const cols = (s.colors || []).filter((c) => c.points > 0);
+    if (cols.length) lines.push(`Renk tercihi: ${cols.map((c) => `${c.name} ${c.points}`).join(', ')} puan (diğer renkler 0)`);
     for (const c of s.criteria.filter((c) => c.points > 0)) lines.push(`${c.name}: ${c.points} puan`);
     return lines.join('\n');
   }
@@ -838,7 +1055,8 @@
   const CORE = {
     DEFAULT_CONFIG, fold, findKeyword, parseTramer, evalHard, evalCriteria, kmScore, tramerScore, scoreListing, ruleFlags, marketModel, computeRows, claudePrompt,
     stableStringify, mergeSame, combineOther, ownCopyOf, manualOf, STATUSES, trackOf, comparePrompt,
-    countPhotoAnswer, voteDecided, voteResult, spreadOrder, visionAccuracy, listBadge,
+    countPhotoAnswer, voteDecided, voteResult, spreadOrder, visionAccuracy, listBadge, visionKey,
+    rangeScore, calibrate, pairAgreement, colorOf,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = CORE;
@@ -891,6 +1109,11 @@
   }
   const loadQueue = () => GM_getValue('queue', []);
   const saveQueue = (x) => GM_setValue('queue', x);
+  // Eski varsayılan görsel sorular → kriter id'si (loadConfig bunları yenisine çevirir)
+  const OLD_VISION = {
+    'Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?': 'jant',
+  };
+
   function loadConfig() {
     const c = GM_getValue('config', null) || JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     // 0.6.0 öncesi kaydedilmiş ayarlarda belirsiz ifade listesi yok: aynı adlı varsayılan donanımdan al
@@ -902,6 +1125,8 @@
     for (const cr of (c.scoring && c.scoring.criteria) || []) {
       const d = DEFAULT_CONFIG.scoring.criteria.find((x) => x.id === cr.id);
       if (cr.vision && !cr.views && d && d.views) cr.views = d.views.slice();
+      // Hiç değiştirilmemiş eski varsayılan soru yenisine geçer (eskisi rengi sormadığı için neredeyse her janta "evet" diyordu)
+      if (d && OLD_VISION[cr.vision] === cr.id) cr.vision = d.vision;
     }
     return c;
   }
@@ -1228,7 +1453,39 @@
     }
   }
 
+  // Örnek fotoğraf bir kez indirilip tarayıcıda saklanır: kaynak ilan kaldırılsa da çalışmaya devam eder
+  async function loadReference(url) {
+    const key = 'ornek:' + url;
+    const cached = GM_getValue(key, null);
+    if (cached) return cached;
+    if (!safeImg(url)) return null;
+    const img = await fetchImage(url);
+    if (!img.b64) return null;
+    GM_setValue(key, img.b64);
+    return img.b64;
+  }
+
+  // İnce ayrımlarda (ör. jant modeli) "X mi?" sorusu modeli "evet" demeye itiyor; örnek fotoğrafla
+  // karşılaştırınca çok daha isabetli. İlk görsel örnek, son görsel ilan fotoğrafı.
+  const referencePrompt = (c) => [
+    `The FIRST image is a reference photo of the wanted design. Question: ${c.vision}`,
+    'The LAST image is a photo from a used car listing.',
+    'Is the same part of the car clearly visible in the last image? If yes, does it look like the reference: the same design AND the same color/finish?',
+    'A similar design in a different color or finish (for example bicolor, polished or silver instead of black) does NOT match.',
+    'Ignore viewing angle, size, dirt and reflections.',
+    'Reply with JSON only: {"visible": true|false, "same": true|false}',
+  ].join('\n');
+
   async function analyzeVision(l, cfg, todo, run, onStep) {
+    // Örnek fotoğrafı olan kriterler ayrı karşılaştırılır; örnek yüklenemezse düz soruyla sorulur
+    const refs = {};
+    for (const c of todo) {
+      if (!(c.referenceImages || []).length) continue;
+      const b64 = await loadReference(c.referenceImages[0]);
+      if (b64) refs[c.id] = b64;
+    }
+    const plain = todo.filter((c) => !refs[c.id]);
+    const withRef = todo.filter((c) => refs[c.id]);
     const prompt = [
       'You are checking ONE photo from a used car listing.',
       'First classify the photo as "view", one of: "exterior_front", "exterior_rear", "exterior_side", "interior", "wheel", "other".',
@@ -1236,11 +1493,11 @@
       'Then for each key below, return {"visible": true|false, "answer": true|false}.',
       '"visible" is true only if the relevant part of the car is clearly visible in THIS photo. If it is not visible, set "answer" to false.',
       '',
-      ...todo.map((c) => `- "${c.id}": ${c.vision}`),
+      ...plain.map((c) => `- "${c.id}": ${c.vision}`),
       '',
-      `Reply with JSON only, with exactly these keys: view, ${todo.map((c) => c.id).join(', ')}.`,
+      `Reply with JSON only, with exactly these keys: view${plain.map((c) => ', ' + c.id).join('')}.`,
     ].join('\n');
-    const votes = Object.fromEntries(todo.map((c) => [c.id, { question: c.vision, yes: 0, no: 0 }]));
+    const votes = Object.fromEntries(todo.map((c) => [c.id, { question: visionKey(c), yes: 0, no: 0 }]));
     // Fotoğraf adresi arkadaştan da gelebilir: sadece Sahibinden'in görsel sunucusu (yerel ağa istek atılmasın)
     const usable = (l.images || []).filter((u) => safeImg(u));
     const imgs = spreadOrder(usable.length).slice(0, cfg.ollama.maxImages).map((i) => usable[i]);
@@ -1274,8 +1531,14 @@
       run.consecutiveFails = 0;
       const ans = await ollamaJSON(cfg, prompt, [img.b64]); // Ollama hatası tüm analizi durdurur
       photos.ok++;
-      const view = countPhotoAnswer(votes, ans, todo) || 'other';
-      photos.views[view] = (photos.views[view] || 0) + 1;
+      const view = countPhotoAnswer(votes, ans, plain);
+      photos.views[view || 'other'] = (photos.views[view || 'other'] || 0) + 1;
+      for (const c of withRef) {
+        if (view && Array.isArray(c.views) && c.views.length && !c.views.includes(view)) continue;
+        if (voteDecided(votes[c.id])) continue;
+        const r = await ollamaJSON(cfg, referencePrompt(c), [refs[c.id], img.b64]);
+        countPhotoAnswer(votes, { [c.id]: { visible: r && r.visible, answer: r && r.same } }, [c]);
+      }
     }
     for (const v of Object.values(votes)) v.result = voteResult(v);
     return { votes, photos };
@@ -1313,7 +1576,7 @@
     const man = manualOf(l);
     // Elle karara bağladığın kriterlere AI'ın tekrar bakması gereksiz
     return (cfg.scoring.criteria || []).filter(
-      (c) => c.vision && man['crit:' + c.id] === undefined && !findKeyword(corpus, c.keywords) && !(done[c.id] && done[c.id].question === c.vision)
+      (c) => c.vision && man['crit:' + c.id] === undefined && !findKeyword(corpus, c.keywords) && !(done[c.id] && done[c.id].question === visionKey(c))
     );
   }
 
@@ -1790,6 +2053,25 @@
     .cmp td, .cmp th { overflow-wrap: anywhere; }
     .cmp img { width: 100%; height: 120px; object-fit: cover; border-radius: 6px; display: block; margin-bottom: 4px; background: var(--bg2); }
     .cmp .best { color: var(--good); font-weight: 700; }
+    .refpick { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+    .refpick .muted { flex-basis: 100%; font-size: 12px; }
+    .refpick img { width: 116px; height: 87px; object-fit: cover; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
+    .refpick img:hover { border-color: var(--line); }
+    .refpick img.on { border-color: var(--accent); }
+    .refs { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0 12px; }
+    .refs figure { margin: 0; font-size: 12px; }
+    .myrank { list-style: none; padding: 0; margin: 6px 0 14px; }
+    .myrank li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 4px; background: var(--bg); }
+    .myrank li.drop-before { box-shadow: 0 -3px 0 var(--accent); }
+    .myrank li.drop-after { box-shadow: 0 3px 0 var(--accent); }
+    .myrank .grip { cursor: grab; color: var(--muted); user-select: none; }
+    .myrank .pos { font-weight: 700; min-width: 22px; text-align: right; }
+    .myrank .t { flex: 1; min-width: 0; }
+    .myrank .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .calib { background: var(--bg2); border-radius: 8px; padding: 10px 12px; margin: 8px 0 12px; }
+    .calib .big { font-size: 18px; font-weight: 700; }
+    .chg td.to { font-weight: 700; }
+    .refs img { width: 140px; height: 105px; object-fit: cover; border-radius: 6px; display: block; margin-bottom: 4px; }
     .cmp .sub { font-size: 11px; }
   `;
 
@@ -1804,6 +2086,41 @@
     root = host.attachShadow({ mode: 'open' });
     root.addEventListener('click', onClick);
     root.addEventListener('input', onInput);
+    // Benim sıralamam: sürükle-bırak
+    root.addEventListener('dragstart', (e) => {
+      const li = e.target.closest && e.target.closest('li[data-rank-id]');
+      if (!li) return;
+      state.dragId = li.dataset.rankId;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', state.dragId);
+    });
+    const clearDrop = () => root.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+    root.addEventListener('dragover', (e) => {
+      const li = e.target.closest && e.target.closest('li[data-rank-id]');
+      if (!li || !state.dragId) return;
+      e.preventDefault();
+      const r = li.getBoundingClientRect();
+      clearDrop();
+      li.classList.add(e.clientY < r.top + r.height / 2 ? 'drop-before' : 'drop-after');
+    });
+    root.addEventListener('dragend', () => {
+      state.dragId = null;
+      clearDrop();
+    });
+    root.addEventListener('drop', (e) => {
+      const li = e.target.closest && e.target.closest('li[data-rank-id]');
+      if (!li || !state.dragId) return;
+      e.preventDefault();
+      const after = li.classList.contains('drop-after');
+      const ids = loadOrder().filter((x) => x !== state.dragId);
+      let at = ids.indexOf(li.dataset.rankId);
+      if (at < 0) return;
+      if (after) at++;
+      ids.splice(at, 0, state.dragId);
+      state.dragId = null;
+      saveOrder(ids);
+      render();
+    });
     // Not alanından çıkınca (ör. "Sonraki ilan"a basınca) yazılan not kaybolmasın
     root.addEventListener('focusout', (e) => {
       if (e.target.matches && e.target.matches('textarea[data-note]')) flushNoteDraft(e.target.dataset.note);
@@ -1869,6 +2186,30 @@
       <button class="mini" data-note-save="${id}">Notu kaydet</button>${draft != null && draft !== own.note ? ' <span class="warn" style="font-size:12px">kaydedilmedi</span>' : ''}</div>`;
   }
 
+  // Örnek fotoğrafı ayarlara yaz (null: kaldır). Ayarlar diğer bilgisayarlarına da gider; o kriter
+  // için fotoğraf analizi bir sonraki çalıştırmada bütün ilanlarda yeniden yapılır.
+  function setReference(cid, url) {
+    const cfg = loadConfig();
+    const c = (cfg.scoring.criteria || []).find((x) => x.id === cid);
+    if (!c || (url && !safeImg(url))) return;
+    if (url) c.referenceImages = [url];
+    else delete c.referenceImages;
+    saveConfig(cfg);
+    state.refPick = null;
+    render();
+    toast(url
+      ? `${c.name} için örnek fotoğraf kaydedildi. "Yerel AI analizini çalıştır" dediğinde bu kriter bütün ilanlarda bu örnekle yeniden kontrol edilir.`
+      : `${c.name} için örnek fotoğraf kaldırıldı.`, 6000);
+  }
+
+  // "Benim sıralamam": ayarların içinde durur, aynı kişinin bilgisayarları arasında eşitlenir
+  const loadOrder = () => ((loadConfig().calibration || {}).order || []).map(String);
+  function saveOrder(ids) {
+    const cfg = loadConfig();
+    cfg.calibration = { ...(cfg.calibration || {}), order: ids };
+    saveConfig(cfg);
+  }
+
   // Karşılaştırma seçimi bu tarayıcıda durur (en fazla 4 ilan)
   const MAX_CMP = 4;
   const loadCmp = () => GM_getValue('compare', []);
@@ -1904,13 +2245,30 @@
       .join('')}</div>`;
   }
 
+  // Örnek fotoğraf seçici: ilanın fotoğrafları küçük olarak, tıklanınca ayarlara kaydedilir
+  function refPicker(l, c) {
+    const cur = new Set(c.referenceImages || []);
+    return `<div class="refpick"><div class="muted">${esc(c.name)} için en net görünen fotoğrafa tıkla (ör. jantın yakından çekildiği):</div>${(l.images || [])
+      .filter(safeImg)
+      .map((u) => `<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-ref-set="${esc(u)}" data-cid="${esc(c.id)}" class="${cur.has(u) ? 'on' : ''}">`)
+      .join('')}</div>`;
+  }
+
   function detailBlock(r) {
+    const cfg = loadConfig();
     const l = r.l;
     const t = l.ai && l.ai.text;
     const man = manualOf(l);
     const lines = r.score.lines
       .map((x) => {
-        const btns = x.key && x.askable ? manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key], man[x.key] !== undefined && !x.manualBy) : '';
+        let btns = x.key && x.askable ? manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key], man[x.key] !== undefined && !x.manualBy) : '';
+        const cid = x.key ? x.key.slice(5) : '';
+        const vc = cid && (cfg.scoring.criteria || []).find((c) => c.id === cid && c.vision);
+        if (vc && man[x.key] === true && !x.manualBy && (l.images || []).some(safeImg)) {
+          const picking = state.refPick && state.refPick.id === String(l.id) && state.refPick.cid === cid;
+          btns += ` <button class="mini" data-ref-pick="${esc(l.id)}" data-cid="${esc(cid)}" title="Bu ilandaki bir fotoğrafı, yerel AI'ın diğer ilanlarla karşılaştıracağı örnek yap">${picking ? 'vazgeç' : '📷 örnek yap'}</button>`;
+          if (picking) btns += refPicker(l, vc);
+        }
         return `<li>${esc(x.name)}: <b>${Math.round(x.points)}/${x.max}</b> <span class="muted">${esc(x.via || '')}${x.pending ? ' ⏳' : ''}</span>${btns}</li>`;
       })
       .join('');
@@ -1994,6 +2352,9 @@
       { g: 'Tramer', label: 'Kayıt yoksa', path: ['scoring', 'tramer', 'noRecordPoints'], min: 0, max: 100, step: 1 },
     ];
     (s.tramer.tiers || []).forEach((t, i) => out.push({ g: 'Tramer', label: `${fmtNum(t.below)} TL altı`, path: ['scoring', 'tramer', 'tiers', i, 'points'], min: 0, max: 100, step: 1 }));
+    if (s.price) out.push({ g: 'Fiyat ve yıl', label: 'Fiyat puanı', path: ['scoring', 'price', 'points'], min: 0, max: 100, step: 1 });
+    if (s.year) out.push({ g: 'Fiyat ve yıl', label: 'Model yılı puanı', path: ['scoring', 'year', 'points'], min: 0, max: 100, step: 1 });
+    (s.colors || []).forEach((c, i) => out.push({ g: 'Renk', label: c.name, path: ['scoring', 'colors', i, 'points'], min: 0, max: 100, step: 1 }));
     (s.criteria || []).forEach((c, i) => out.push({ g: 'Kriterler', label: c.name, path: ['scoring', 'criteria', i, 'points'], min: 0, max: 100, step: 1 }));
     return out;
   }
@@ -2053,6 +2414,7 @@
   function tuneKey(cfg, p) {
     if (p[1] === 'criteria') return ['scoring', 'criteria', { id: cfg.scoring.criteria[p[2]].id }, ...p.slice(3)];
     if (p[2] === 'tiers') return ['scoring', 'tramer', 'tiers', { below: cfg.scoring.tramer.tiers[p[3]].below }, ...p.slice(4)];
+    if (p[1] === 'colors') return ['scoring', 'colors', { name: cfg.scoring.colors[p[2]].name }, ...p.slice(3)];
     return p;
   }
 
@@ -2120,6 +2482,68 @@
           <button class="mini" data-track-status="" data-id="${esc(r.l.id)}" title="Durumu temizle, ilan sıralamaya geri dönsün">geri al</button></li>`)
         .join('')}</ul></details>`;
     }
+    return html;
+  }
+
+  // ----- Benim sıralamam: elle sırala, o sıralamayı veren puanları bul, genel listeye uygula -----
+  const MIN_CALIB = 8; // bundan az ilanla öneri gürültülü
+  function renderMyRank(result) {
+    const all = state.allCache || loadAllListings();
+    const cfg = loadConfig();
+    const order = loadOrder().filter((id) => all[id]);
+    const byId = new Map(result.all.map((r) => [String(r.l.id), r]));
+    const generalPos = new Map();
+    result.passed.forEach((r, i) => generalPos.set(String(r.l.id), i + 1));
+    const cal = calibrate(all, order, cfg);
+    const sugScore = cal ? new Map(order.map((id) => [id, scoreListing(all[id], cal.suggested).total])) : null;
+    const sugPos = sugScore ? new Map([...order].sort((a, b) => sugScore.get(b) - sugScore.get(a)).map((id, i) => [id, i + 1])) : null;
+    const pct = (x) => (x == null ? '–' : '%' + Math.round(x * 100));
+
+    let html = `<p class="muted">Beğendiğin ilanları kendi önceliğine göre diz: en iyisi en üstte. Hepsini sıralaman gerekmez; ${MIN_CALIB}–15 ilan yeter.
+      Her değişiklikte asistan, bu sıralamayı en iyi veren puanları hesaplar. Uygun bulursan <b>Ayarları Genel Listeye Uygula</b> ile genel sıralamanın ayarı yaparsın.</p>`;
+    if (cal) {
+      const better = cal.after > cal.before + 1e-9;
+      html += `<div class="calib"><div>Sıraladığın ${cal.n} ilanın ${cal.pairs} ikilisinde puanların seninle aynı sırayı verme oranı:</div>
+        <div><span class="big">${pct(cal.before)}</span> şimdiki ayarlarla → <span class="big ${better ? 'good' : ''}">${pct(cal.after)}</span> önerilen ayarlarla</div>
+        ${cal.n < MIN_CALIB ? `<div class="warn">Öneri için en az ${MIN_CALIB} ilan sıralamanı öneririm; az ilanla hesap rastlantısal farklara takılabilir.</div>` : ''}
+        <div class="bar" style="margin:8px 0 0"><button class="primary" data-action="rank-apply" ${better ? '' : 'disabled'}>Ayarları Genel Listeye Uygula</button>
+        <button data-action="rank-clear">Sıralamayı temizle</button><span class="muted" data-status>${esc(state.status)}</span></div></div>`;
+      const changed = cal.changes.filter((c) => c.from !== c.to);
+      html += `<details ${state.calibOpen ? 'open' : ''}><summary data-calib-toggle>Önerilen puanlar (${changed.length} değişiklik)</summary>
+        <table class="chg"><thead><tr><th>Bileşen</th><th class="num">Şimdi</th><th class="num">Önerilen</th></tr></thead><tbody>${cal.changes
+          .map((c) => `<tr class="${c.from !== c.to ? '' : 'muted'}"><td>${esc(c.label)}</td><td class="num">${c.km ? fmtNum(c.from) : c.from}</td><td class="num ${c.from !== c.to ? 'to' : ''}">${c.km ? fmtNum(c.to) : c.to}</td></tr>`)
+          .join('')}</tbody></table>
+        <p class="muted">Fiyat ve model yılı puanı yeni: önerilen ayarda fiyat ${fmtTL(cal.suggested.scoring.price.best)} ve altı tam puan, ${fmtTL(cal.suggested.scoring.price.worst)} ve üstü 0; model yılı ${cal.suggested.scoring.year.best} ve sonrası tam puan, ${cal.suggested.scoring.year.worst} ve öncesi 0. Mutlak filtreler değişmez.</p></details>`;
+    } else if (order.length) {
+      html += `<div class="calib warn">Puan önerisi için en az 3 ilan sırala.<div class="bar" style="margin:8px 0 0"><button data-action="rank-clear">Sıralamayı temizle</button></div></div>`;
+    }
+
+    html += `<h2>Senin sıralaman (${order.length})</h2>`;
+    html += order.length
+      ? `<ol class="myrank">${order
+          .map((id, i) => {
+            const r = byId.get(id);
+            const l = all[id];
+            const g = generalPos.get(id);
+            const st = r ? r.hard.status : null;
+            const where = g ? `genel listede #${g}` : st === 'elendi' ? 'elendi' : st === 'belirsiz' ? 'doğrulanamadı' : isClosed(l) ? 'kapandı' : '';
+            const sp = sugPos ? sugPos.get(id) : null;
+            return `<li draggable="true" data-rank-id="${esc(id)}"><span class="grip" title="Sürükle">⠿</span><span class="pos">${i + 1}</span>
+              <span class="t"><a href="${esc(safeUrl(l.url))}" target="_blank">${esc(l.title)}</a>${statusChip(l)}<div class="meta">${fmtTL(l.price)} · ${fmtNum(l.km)} km · ${esc(l.year ?? '–')} · ${where}${sp ? ` · öneriyle ${sp}. sırada${sp !== i + 1 ? (sp < i + 1 ? ' ↑' : ' ↓') : ' ✓'}` : ''}</div></span>
+              <span class="mbtns"><button class="mini" data-rank-move="up" data-id="${esc(id)}" ${i ? '' : 'disabled'}>↑</button><button class="mini" data-rank-move="down" data-id="${esc(id)}" ${i < order.length - 1 ? '' : 'disabled'}>↓</button><button class="mini" data-rank-remove="${esc(id)}" title="Sıralamadan çıkar">×</button></span></li>`;
+          })
+          .join('')}</ol>`
+      : '<p class="muted">Henüz ilan sıralamadın. Aşağıdan ekle.</p>';
+
+    const inOrder = new Set(order);
+    const pool = [...result.passed, ...result.unsure, ...result.rejected].filter((r) => !inOrder.has(String(r.l.id)));
+    html += `<h2>Sıralamaya ekle <span class="muted">(${pool.length} ilan, şimdiki puana göre)</span></h2>`;
+    html += pool.length
+      ? `<table><tbody>${pool
+          .map((r) => `<tr><td class="num"><button class="mini" data-rank-add="${esc(r.l.id)}">＋ ekle</button></td><td><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)}${r.hard.status === 'elendi' ? ' <span class="bad" style="font-size:12px">elendi</span>' : ''}</td>
+            <td class="num">${fmtTL(r.l.price)}</td><td class="num">${fmtNum(r.l.km)}</td><td class="num">${esc(r.l.year ?? '–')}</td><td class="num score ${scoreClass(r)}">${Math.round(r.score.total)}<span class="muted">/${r.score.max}</span></td></tr>`)
+          .join('')}</tbody></table>`
+      : '<p class="muted">Bütün ilanlar sıralamanda.</p>';
     return html;
   }
 
@@ -2268,6 +2692,14 @@
     return html;
   }
 
+  function renderRefs() {
+    const withRef = (loadConfig().scoring.criteria || []).filter((c) => c.vision && (c.referenceImages || []).length);
+    if (!withRef.length) return '';
+    return `<b>Örnek fotoğraflar</b> <span class="muted">(yerel AI bu kriterlerde ilan fotoğraflarını bunlarla karşılaştırır)</span><div class="refs">${withRef
+      .map((c) => `<figure><img src="${esc(safeImg(c.referenceImages[0]))}" alt="" referrerpolicy="no-referrer">${esc(c.name)} <button class="mini" data-ref-clear="${esc(c.id)}">kaldır</button></figure>`)
+      .join('')}</div>`;
+  }
+
   function renderSettings() {
     const backup = GM_getValue('configBackup', null);
     const by = GM_getValue('configBy', '');
@@ -2279,6 +2711,7 @@
       Donanımlarda <code>unsureKeywords</code>: ilanda sadece bunlar geçiyorsa "var" sayılmaz, sana sorulur.
       ${syncReady() ? '<br>Ayarlar, kişi adın aynı olan bütün bilgisayarlarında ortak; en son kaydedilen geçerli.' : ''}
       ${at ? `<br>Son kayıt: ${esc(fmtAt(at))}${by ? ` (${esc(by)})` : ''}.` : ''}</p>
+      ${renderRefs()}
       <textarea data-config spellcheck="false">${esc(JSON.stringify(loadConfig(), null, 2))}</textarea>
       <div class="bar" style="margin-top:8px">
         <button class="primary" data-action="cfg-save">Kaydet</button>
@@ -2379,8 +2812,8 @@
       const result = computeRows(state.allCache, cfg);
       const known = new Set(Object.keys(state.allCache || {}));
       const nCmp = loadCmp().filter((id) => known.has(id)).length;
-      const tabs = [['sira', 'Sıralama'], ['kars', `Karşılaştır${nCmp ? ` (${nCmp})` : ''}`], ['analiz', 'Piyasa analizi'], ['ayar', 'Ayarlar'], ['veri', 'Veri'], ['paylasim', 'Paylaşım']];
-      const views = { sira: () => renderRanking(result), kars: () => renderCompare(result), analiz: () => renderAnalysis(result), ayar: renderSettings, veri: renderData, paylasim: renderShare };
+      const tabs = [['sira', 'Sıralama'], ['benim', 'Benim sıralamam'], ['kars', `Karşılaştır${nCmp ? ` (${nCmp})` : ''}`], ['analiz', 'Piyasa analizi'], ['ayar', 'Ayarlar'], ['veri', 'Veri'], ['paylasim', 'Paylaşım']];
+      const views = { sira: () => renderRanking(result), benim: () => renderMyRank(result), kars: () => renderCompare(result), analiz: () => renderAnalysis(result), ayar: renderSettings, veri: renderData, paylasim: renderShare };
       const body = (views[state.tab] || views.sira)();
       const sl = syncLabel();
       panel = `<div class="panel"><div class="head"><h1>Araç Asistanı</h1>${tabs
@@ -2436,10 +2869,20 @@
     if (!h || !s || !c.ollama) throw new Error('"ollama", "hardFilters" ve "scoring" bölümleri gerekli.');
     for (const k of ['maxKm', 'minYear', 'maxPrice']) if (typeof h[k] !== 'number') throw new Error(`hardFilters.${k} sayı olmalı.`);
     if (!s.km || !s.tramer || !Array.isArray(s.criteria)) throw new Error('scoring içinde km, tramer ve criteria gerekli.');
+    if (s.colors !== undefined && (!Array.isArray(s.colors) || s.colors.some((c) => !c || typeof c.name !== 'string' || typeof c.points !== 'number'))) {
+      throw new Error('scoring.colors şu biçimde olmalı: [{ "name": "Siyah", "points": 10 }, …]');
+    }
+    for (const k of ['price', 'year']) {
+      if (s[k] !== undefined && !['points', 'best', 'worst'].every((f) => typeof s[k][f] === 'number')) throw new Error(`scoring.${k} içinde points, best ve worst sayı olmalı.`);
+    }
+    if (c.calibration !== undefined && !(c.calibration && Array.isArray(c.calibration.order))) throw new Error('calibration.order bir liste olmalı.');
     const ids = new Set();
     for (const cr of s.criteria) {
       if (!cr.id || !cr.name || typeof cr.points !== 'number') throw new Error('Her kriterde id, name ve points olmalı.');
       if (ids.has(cr.id)) throw new Error(`Kriter id'si tekrar ediyor: ${cr.id}`);
+      if (cr.referenceImages !== undefined && (!Array.isArray(cr.referenceImages) || cr.referenceImages.some((u) => !safeImg(u)))) {
+        throw new Error(`${cr.id}.referenceImages sadece https://i0.shbdn.com/… fotoğraf adresleri içerebilir.`);
+      }
       if (cr.views !== undefined && (!Array.isArray(cr.views) || cr.views.some((v) => !VIEWS.includes(v)))) {
         throw new Error(`${cr.id}.views şu türlerden oluşmalı: ${VIEWS.join(', ')}`);
       }
@@ -2486,6 +2929,44 @@
       const ta = noteBtn.closest('.track').querySelector('textarea[data-note]');
       return setTrack(noteBtn.dataset.noteSave, 'note', ta ? ta.value.trim() : '');
     }
+
+    // Benim sıralamam
+    if (e.target.closest('summary[data-calib-toggle]')) {
+      state.calibOpen = !state.calibOpen;
+      return;
+    }
+    const rankAdd = e.target.closest('[data-rank-add]');
+    if (rankAdd) {
+      saveOrder([...loadOrder().filter((x) => x !== rankAdd.dataset.rankAdd), rankAdd.dataset.rankAdd]);
+      return render();
+    }
+    const rankMove = e.target.closest('[data-rank-move]');
+    if (rankMove) {
+      const ids = loadOrder();
+      const i = ids.indexOf(rankMove.dataset.id);
+      const j = rankMove.dataset.rankMove === 'up' ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      saveOrder(ids);
+      return render();
+    }
+    const rankRemove = e.target.closest('[data-rank-remove]');
+    if (rankRemove) {
+      saveOrder(loadOrder().filter((x) => x !== rankRemove.dataset.rankRemove));
+      return render();
+    }
+
+    // Örnek fotoğraf
+    const pickBtn = e.target.closest('[data-ref-pick]');
+    if (pickBtn) {
+      const same = state.refPick && state.refPick.id === pickBtn.dataset.refPick && state.refPick.cid === pickBtn.dataset.cid;
+      state.refPick = same ? null : { id: pickBtn.dataset.refPick, cid: pickBtn.dataset.cid };
+      return render();
+    }
+    const refImg = e.target.closest('[data-ref-set]');
+    if (refImg) return setReference(refImg.dataset.cid, refImg.dataset.refSet);
+    const refClear = e.target.closest('[data-ref-clear]');
+    if (refClear) return setReference(refClear.dataset.refClear, null);
 
     // Karşılaştırma seçimi
     const cmpBox = e.target.closest('input[data-cmp]');
@@ -2545,6 +3026,21 @@
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
+    if (action === 'rank-apply') {
+      const cfg = loadConfig();
+      const cal = calibrate(loadAllListings(), loadOrder(), cfg);
+      if (!cal || !(cal.after > cal.before)) return;
+      if (!confirm(`Önerilen puanlar genel sıralamanın ayarı olsun mu? Uyum ${Math.round(cal.before * 100)}% → ${Math.round(cal.after * 100)}%. Şimdiki ayarlar yedeğe alınır (Ayarlar → Önceki ayarları geri yükle).`)) return;
+      GM_setValue('configBackup', { config: cfg, at: Date.now(), from: '' });
+      saveConfig(validateConfig(cal.suggested));
+      state.status = 'Puanlar uygulandı; genel sıralama artık senin sıralamandan öğrenilen ayarlarla.';
+      return render();
+    }
+    if (action === 'rank-clear') {
+      if (!confirm('Elle yaptığın sıralama temizlensin mi? Puan ayarlarına dokunulmaz.')) return;
+      saveOrder([]);
+      return render();
+    }
     if (action === 'card') {
       state.cardOpen = !state.cardOpen;
       return render();
