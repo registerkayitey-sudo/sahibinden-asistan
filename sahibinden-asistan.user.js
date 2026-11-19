@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.10.0
+// @version      0.10.1
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -910,10 +910,12 @@
     return t + col;
   }
 
-  // "Önemli" işaretlediğin bileşenler (varsayılan: model yılı) toplam puanın en az bu payını alır; kalan puan
-  // sıralamandan öğrenilir. Az ilanla sıralama, yılın ne kadar önemli olduğunu tek başına söyleyemeyebiliyor
-  // (ör. en yeni araç tramer yüzünden en altta): o belirsizlikte yıl eski değerine (0) yakın kalıyordu.
-  const IMPORTANT_DEFAULT = ['year'];
+  // "Önemli" işaretlediğin bileşenler (varsayılan: model yılı ve fiyat) toplam puanın en az bu payını alır; kalan puan
+  // sıralamandan öğrenilir. Az ilanla sıralama, yılın ya da fiyatın ne kadar önemli olduğunu tek başına söyleyemeyebiliyor
+  // (ör. en yeni araç tramer yüzünden en altta; fiyat yıl, km ve donanımla iç içe): o belirsizlikte bileşen eski değerine
+  // (0) yakın kalıyordu. Gerçek 10 ilanlık bir sıralamada ham fiyat da piyasaya göre fiyat da tek başına ~0,5 uyum
+  // verdi; fiyatı önemli saymak uyumu düşürmedi (35/45 her iki durumda).
+  const IMPORTANT_DEFAULT = ['year', 'price'];
   const IMPORTANT_SHARE = 0.1;
   const importantOf = (cfg) => (cfg.calibration && Array.isArray(cfg.calibration.important) ? cfg.calibration.important : IMPORTANT_DEFAULT);
   // Tramer ve renkler işaretlenemez: tramer basamakları ve "renklerden sadece en yükseği" kuralı alt sınırla karışır

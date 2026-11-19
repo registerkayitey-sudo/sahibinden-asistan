@@ -266,7 +266,7 @@ const YL = {
   y8: CB('y8', 2023, 64000, 'Tramer 20 bin TL.'),
 };
 const yorder = ['y1', 'y2', 'y3', 'y4', 'y5', 'y6', 'y7', 'y8'];
-eq('önemli: varsayılan model yılı', A.importantOf(cfg), ['year']);
+eq('önemli: varsayılan model yılı ve fiyat', A.importantOf(cfg), ['year', 'price']);
 eq('önemli: ayardaki liste geçerli', A.importantOf({ calibration: { order: [], important: [] } }), []);
 const yFree = A.calibrate(YL, yorder, cfg, { important: [] });
 const yImp = A.calibrate(YL, yorder, cfg);
@@ -275,10 +275,15 @@ eq('önemli: işaretli yıl en az %10 (15 puan)', [yImp.floor, yImp.suggested.sc
 eq('önemli: yıl aralığı sıralanan ilanlardan', [yImp.suggested.scoring.year.worst, yImp.suggested.scoring.year.best], [2020, 2023]);
 eq('önemli: Shadowsuzlarda 2022 > 2020', A.scoreListing(YL.y4, yImp.suggested).total > A.scoreListing(YL.y6, yImp.suggested).total, true);
 eq('önemli: toplam puan korunur', Math.abs(A.scoreListing(YL.y1, yImp.suggested).max - A.scoreListing(YL.y1, cfg).max) <= 2, true);
-eq('önemli: öğrenildi bilgisi', yImp.important.map((x) => [x.key, x.learned]), [['year', true]]);
+eq('önemli: öğrenildi bilgisi', yImp.important.map((x) => [x.key, x.learned]), [['price', true], ['year', true]]);
 eq('önemli: uyum yine artar', yImp.after > yImp.before, true);
 const sameYear = Object.fromEntries(Object.entries(YL).map(([k, l]) => [k, { ...l, year: 2021 }]));
-eq('önemli: hepsi aynı yılsa öğrenilemez', A.calibrate(sameYear, yorder, cfg).important.map((x) => x.learned), [false]);
+eq('önemli: hepsi aynı yılsa öğrenilemez', A.calibrate(sameYear, yorder, cfg).important.find((x) => x.key === 'year').learned, false);
+// Fiyat: tek başına sıralamayı açıklamasa da (ucuz olan altta da olabilir) önemli sayılınca puan alır
+eq('önemli: fiyat varsayılan olarak alt sınırda', yImp.suggested.scoring.price.points >= yImp.floor, true);
+eq('önemli: fiyat aralığı sıralanan ilanlardan', [yImp.suggested.scoring.price.best, yImp.suggested.scoring.price.worst], [2200000, 2380000]);
+eq('önemli: sadece yıl işaretliyse fiyata alt sınır yok', A.calibrate(YL, yorder, cfg, { important: ['year'] }).important.map((x) => x.key), ['year']);
+eq('önemli: ucuz olan daha çok fiyat puanı alır', A.scoreListing(YL.y6, yImp.suggested).lines.find((x) => x.name === 'Fiyat').points > A.scoreListing(YL.y7, yImp.suggested).lines.find((x) => x.name === 'Fiyat').points, true);
 const two = A.calibrate(YL, yorder, cfg, { important: ['year', 'km'] });
 eq('önemli: iki bileşen ikisi de alt sınırda', [two.suggested.scoring.year.points >= two.floor, two.suggested.scoring.km.points >= two.floor], [true, true]);
 
