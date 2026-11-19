@@ -38,7 +38,7 @@ Fotoğraf analizi Apple Silicon Mac'lerde ve ekran kartı olan PC'lerde fotoğra
 ## 3. Kullanım
 
 1. Sahibinden'de aramanı yap (model, yıl, km ve fiyat filtrelerini sitenin kendi filtrelerinden ver; ne kadar daraltırsan o kadar az gezersin).
-2. Arama sonuçlarında **"Sayfadaki N ilanı kuyruğa ekle"** düğmesine bas. Birden fazla sayfa varsa her sayfada tekrarla.
+2. Arama sonuçlarında her ilanın yanında bir rozet görürsün (aşağıda). **"Sayfadaki N yeni ilanı kuyruğa ekle"** düğmesi daha önce açmadığın ilanları kuyruğa alır. Birden fazla sayfa varsa her sayfada tekrarla.
 3. İlk ilanı aç. Asistan ilanı otomatik kaydeder ve puanını gösterir. **"Sonraki ilan →"** ile sıradakine geç.
 4. Bitince **🚗 Asistan** düğmesiyle paneli aç:
    - **Sıralama:** En iyi 10, altında filtreyi geçen diğer ilanlar (puana göre), doğrulanamayan ama puanı yüksek ilanlar ve elenenler. Her satırın "ayrıntılar" kısmında puan dökümü, boya bilgisi ve uyarılar var.
@@ -48,6 +48,26 @@ Fotoğraf analizi Apple Silicon Mac'lerde ve ekran kartı olan PC'lerde fotoğra
    - **Piyasa analizi:** Gezdiğin tüm ilanlardan (elenenler dahil) bir fiyat modeli kurar: her ilanın piyasaya göre yüzde kaç ucuz veya pahalı olduğu, km başına ve model yılı başına fiyat etkisi, fiyat/km grafiği. En az 8 ilan gerekir.
 
 Fiyatı değişen ilanları tekrar açarsan asistan eski ve yeni fiyatı uyarı olarak gösterir.
+
+### Durum, not ve karşılaştırma
+
+- **Durum:** Her ilana bir durum verebilirsin: *Takipte, Arandı, Ekspertiz, Teklif verildi, Vazgeçildi, Satılmış*. Durum verdiğin ilanlar Sıralama'nın en üstünde **Takip ettiklerin** listesinde, ilerlemiş olan önce görünür. *Vazgeçildi* ve *Satılmış* ilanı sıralamadan ve AI analizinden çıkarır, en alttaki **Kapananlar**'a taşır (piyasa modeline katkısı sürer). **geri al** ile sıralamaya döner.
+- **Not:** Satıcıyla konuştuklarını, ekspertiz sonucunu, pazarlığı yaz. Not ve durum ilanın "ayrıntılar" kısmında; ilan sayfasındayken sağ alttaki **📝 Not / durum** düğmesinden de açılır, satıcıyla konuşurken oradan yazabilirsin. Not alanından çıkınca (ör. **Sonraki ilan**'a basınca) not kendiliğinden kaydedilir. Notlar **Claude için kopyala** metnine de girer.
+- **Karşılaştırma:** Sıralamada ilanların solundaki kutucuklardan 2–4 ilan seç, **Karşılaştır** sekmesinde yan yana gör. Her satırda en iyi değer (en düşük fiyat, en az km, en yeni yıl, en yüksek puan…) yeşil yazılır. **Bu karşılaştırmayı Claude için kopyala** sadece seçtiğin ilanları notlarınla birlikte kopyalar.
+- GitHub paylaşımı açıksa durum ve notlar diğer bilgisayarlarına da gider. Dahil ettiğin bir arkadaşının durumu ve notu ilanda "(ali)" gibi adıyla görünür ama seninkinin yerine geçmez: ali "vazgeçti" dedi diye ilan senin listenden düşmez.
+
+### Arama sonuçlarında rozetler
+
+Arama listesinde her ilanın başlığının yanında bir rozet çıkar:
+
+- **✓ 112/150** (yeşil): filtreleri geçti, puanı bu. Durum verdiysen yanında yazar (ör. "· Arandı").
+- **? 95/150** (turuncu): bazı şartlar ilandan doğrulanamadı; üstüne gelince hangileri olduğu görünür.
+- **✗ Motor Kaputu: boyalı** (kırmızı): elendi, ilk nedeni bu. Satır soluk görünür.
+- **Vazgeçildi / Satılmış** (gri): kapattığın ilan, satır soluk.
+- **yeni** (gri): henüz açmadığın ilan.
+- **↓ 100 bin / ↑ 50 bin**: ilk gördüğünden bu yana fiyat değişimi. Listede görünen fiyat kayıtlı fiyattan farklıysa kayıt ilanı açmana gerek kalmadan güncellenir.
+
+Rozetler sadece açık olan sayfayı okur; Sahibinden'e fazladan istek atılmaz.
 
 ### Kendin doğrulama
 
@@ -115,6 +135,6 @@ Token'ı paylaşmanın bedeli şu: token'ı olan herkes veri reposunun tamamın�
 
 - **Sayfa yapısı** Kasım 2026 itibarıyla gerçek bir ilanla doğrulandı. Sahibinden sayfa tasarımını değiştirirse veri okuma bozulabilir; ilan kaydedilince çıkan bildirimde puan veya boya bilgisi tuhaf görünürse haber ver.
 - **Tramer** açıklamadan metin olarak okunur. "Tramer 2 parça 30 bin" gibi ifadeleri yakalar ama alışılmadık yazımlar kaçabilir; tramer sütununda `?` görürsen ilanı kendin oku.
-- **Fotoğraf analizi kesin değildir**, özellikle 554M jant gibi ince ayrımlarda. Puanı fotoğraftan gelen kriterler ayrıntılarda "fotoğraf (x evet / y hayır)" olarak işaretlenir; son 10'dakilere kendin de bak.
+- **Fotoğraf analizi kesin değildir**, özellikle 554M jant gibi ince ayrımlarda. Puanı fotoğraftan gelen kriterler ayrıntılarda "fotoğraf (x evet / y hayır)" olarak işaretlenir; son 10'dakilere kendin de bak. Model her fotoğrafın türünü de söyler (ön, arka, yan, iç mekân, jant) ve oy sadece ilgili türden sayılır (ayarlarda kriterin `views` alanı); kırmızı bir aracın dış fotoğrafı "kırmızı koltuk" oyu veremez. Fotoğraflar galeriye yayılarak seçilir, sorular netleşince analiz erken biter. AI'ın ne kadar isabetli olduğunu **Piyasa analizi → Yerel AI'ın fotoğraf isabeti** tablosunda görürsün: AI'dan sonra Var/Yok ile işaretlediğin kriterler gerçek cevap sayılır.
 - **Piyasa modeli** sadece yıl ve km'ye bakar, donanım ve hasar farkını hesaba katmaz.
 - Asistan sadece senin açtığın sayfaları okur; otomatik gezinme yapmaz. Sahibinden'in bot kontrolüne takılırsan kontrolü kendin geç ve devam et.

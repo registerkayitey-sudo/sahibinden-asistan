@@ -29,11 +29,13 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 - Fiyat: `.classifiedInfo h3`. Başlık: `.classifiedDetailTitle h1`. Açıklama: `#classifiedDescription`. Donanım: `#classifiedProperties li.selected`.
 - Boya/değişen: `.car-parts > div`. Sınıflar parçayı (`front-hood`, `roof`…) ve durumu (`original-new`, `local-painted-new`, `painted-new`, `changed-new`) veriyor.
 - Fotoğraflar: `https://i0.shbdn.com/photos/…/<önek>_<ilanNo><kod>.jpg`. Önekler `thmb_`, `x5_`, `x16_`; analizde 528 px'lik `x5_` kullanılıyor.
+- Arama sonuçları (rozetler, `searchRows`): **gerçek sayfayla henüz doğrulanmadı.** Beklenen: `tr.searchResultsItem[data-id]`, başlık `a.classifiedTitle`, fiyat `.searchResultsPriceValue`. Yedek olarak ilan numarası linkten, fiyat "… TL" yazan hücreden okunuyor.
 - Tramer ayrı bir alan değil, açıklamada metin olarak geçiyor (ör. "595.000TL TRAMER KAYDI VARDIR").
 
 ## Yerel AI
 
 - Model `gemma4:12b`. İstekler `think: false` ile gidiyor; düşünme modu cevabı yaklaşık 5 kat yavaşlatıyor.
+- Fotoğraf başına tek çağrı: model hem fotoğrafın türünü (`view`) hem soruların cevabını verir. Kriterin `views` listesi varsa oy sadece o türlerden sayılır (`countPhotoAnswer`). Fotoğraflar `spreadOrder` ile galeriye yayılarak seçilir; sorular netleşince (`voteDecided`) erken durur. İsabet, Var/Yok kararlarıyla ölçülür (`visionAccuracy`); soru değiştirirken önce bu tabloya bak.
 - Tarayıcı eklentisinin Ollama'ya erişmesi için `OLLAMA_ORIGINS="chrome-extension://*,moz-extension://*,safari-web-extension://*"` gerekli. Mac'te bir LaunchAgent bunu her açılışta ayarlıyor.
 - Mac: Apple M5, 16 GB RAM. Windows: AMD RX 6800 (16 GB VRAM).
 
@@ -55,9 +57,8 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 ## Bilinen açık konular (henüz düzeltilmedi)
 
 - Token arkadaşlarla paylaşılınca herkes veri reposunun tamamını okuyup her klasöre yazabilir; "dahil et" listesi sadece görüntüyü filtreler.
-- `ownCopyOf`: başkasının ilanı kopyalanınca onun AI ve Var/Yok kararları senin kararın gibi görünür.
 - Kullanıcı adı çakışması: `ali` adlı biri, `ali-laptop` adlı başka birinin eski klasörünü kendi klasörüne birleştirip silebilir (git geçmişinden geri alınabilir).
 - Eşitleme her şeyi tek commit'te gönderiyor; çok büyük ilk eşitlemede GitHub'ın boyut sınırına takılabilir.
 - "Başlangıca dön" sayfa oturumundaki ilk kaydırmaya döner, panelin açıldığı ana değil.
-- Arkadaştan gelen `url` ve `images` doğrulanmıyor (link şeması, adres kontrolü yok). Veri dosyası içe aktarma da kayıtları doğrulamıyor.
+- Veri dosyası içe aktarma kayıtları doğrulamıyor. (Arkadaştan gelen `url` ve `images` ekranda ve AI indirmesinde `safeUrl` / `safeImg` ile süzülüyor: link sadece sahibinden.com, fotoğraf sadece shbdn.com.)
 - `render()` her AI adımında her şeyi yeniden hesaplıyor; çok ilanda yavaşlayabilir.

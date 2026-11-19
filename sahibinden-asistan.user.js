@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.6.1
+// @version      0.7.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -63,6 +63,7 @@
           id: 'kirmizi', name: 'Kırmızı koltuk', points: 30,
           keywords: ['kırmızı koltuk', 'kırmızı deri', 'kırmızı döşeme', 'kırmızı iç', 'fiona red', 'tacora red', 'mugello red', 'coral red'],
           vision: 'Are the car seats red (red leather or red upholstery)?',
+          views: ['interior'],
         },
         {
           id: 'shadow', name: 'Shadow paket', points: 20,
@@ -73,11 +74,13 @@
           id: 'jant', name: '554M Y-Spoke jant', points: 10,
           keywords: ['554m', '554 m', 'y-spoke', 'y spoke', 'y kollu'],
           vision: 'Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?',
+          views: ['wheel', 'exterior_side', 'exterior_front', 'exterior_rear'],
         },
         {
           id: 'izgara', name: 'Siyah ızgara (7M9)', points: 0,
           keywords: ['7m9', 'siyah ızgara', 'siyah böbrek', 'parlak siyah ızgara', 'shadow line'],
           vision: 'Is the BMW kidney grille frame black (not chrome)?',
+          views: ['exterior_front'],
         },
       ],
     },
@@ -213,6 +216,35 @@
   // Karar dahil ettiğin başka bir kişiden geliyorsa onun adı, seninse null
   const manualBy = (l, key) => (l && l._manualBy && l._manualBy[key]) || null;
 
+  // ---------------------------------------------------------------------------
+  // Takip: ilana senin verdiğin durum ve not
+  // ---------------------------------------------------------------------------
+  // İlanda track: { status: { v, at }, note: { v, at } } olarak durur. Elle kararlar gibi alan başına
+  // en yeni kazanır; v: null "temizlendi" demek, silinmez ki eşitlemede eski değer geri gelmesin.
+  // Kapanmış durumlar (closed) ilanı sıralamadan ve AI analizinden çıkarır, piyasa modelinde kalır.
+  const STATUSES = [
+    { id: 'takip', label: 'Takipte' },
+    { id: 'arandi', label: 'Arandı' },
+    { id: 'ekspertiz', label: 'Ekspertiz' },
+    { id: 'teklif', label: 'Teklif verildi' },
+    { id: 'vazgecti', label: 'Vazgeçildi', closed: true },
+    { id: 'satildi', label: 'Satılmış', closed: true },
+  ];
+  const statusInfo = (id) => STATUSES.find((x) => x.id === id) || null;
+
+  // by: durum/not dahil ettiğin başka bir kişiden geliyorsa onun adı. Onun durumu seninkinin yerine geçmez,
+  // sadece bilgi olarak gösterilir (ali "vazgeçti" dedi diye ilan senin listenden düşmez).
+  function trackOf(l) {
+    const t = (l && l.track) || {};
+    const status = t.status && statusInfo(t.status.v) ? t.status.v : null;
+    const note = t.note && typeof t.note.v === 'string' ? t.note.v : '';
+    return { status, note, by: (l && l._trackBy) || null };
+  }
+  const isClosed = (l) => {
+    const t = trackOf(l);
+    return !t.by && !!(statusInfo(t.status) || {}).closed;
+  };
+
   function evalHard(l, cfg) {
     const h = cfg.hardFilters;
     const man = manualOf(l);
@@ -301,7 +333,7 @@
       if (o) { res[c.id] = o; continue; }
       const kw = findKeyword(corpus, c.keywords);
       const v = vision[c.id];
-      const vTxt = v ? `fotoğraf (${v.yes} evet / ${v.no} hayır)${visionBy[c.id] ? ' · ' + visionBy[c.id] : ''}` : null;
+      const vTxt = v ? (v.result == null ? 'fotoğraflarda görülemedi, kendin bak' : `fotoğraf (${v.yes} evet / ${v.no} hayır)`) + (visionBy[c.id] ? ' · ' + visionBy[c.id] : '') : null;
       if (kw) res[c.id] = { met: true, via: `metin: "${kw}"` };
       else if (v && v.result === true) res[c.id] = { met: true, via: vTxt };
       else if (c.vision && !(v && v.question === c.vision)) res[c.id] = { met: false, pending: true, via: 'fotoğraf analizi bekliyor' };
@@ -424,6 +456,7 @@
       priceHistory: hist.filter((p, i) => i === 0 || p.price !== hist[i - 1].price),
       ai: mergeAI(a.ai, b.ai),
       manual: mergeManual(a.manual, b.manual),
+      track: mergeManual(a.track, b.track), // aynı { v, at } biçimi: alan başına en yeni
     };
   }
 
@@ -448,6 +481,8 @@
         if (e && typeof e.v === 'boolean') c._manualBy[k] = user;
       }
       c._aiBy = aiOwners(c.ai, user);
+      const t = trackOf(c);
+      if (t.status || t.note) c._trackBy = user;
       return c;
     }
     const by = base._aiBy || {};
@@ -470,14 +505,101 @@
     if ((!ai.text || ai.text.error) && oa.text && !oa.text.error) { ai.text = oa.text; c._aiBy.text = user; }
     if (!ai.photos && oa.photos) { ai.photos = oa.photos; c._aiBy.photos = user; }
     c.ai = ai;
+    const mine = trackOf(base), theirs = trackOf(o);
+    if (!mine.status && !mine.note && !base._trackBy && (theirs.status || theirs.note)) {
+      c.track = o.track;
+      c._trackBy = user;
+    }
     return c;
   }
 
-  // Başkasının ilanında bir şeyi değiştirdiğinde onunkine dokunulmaz: gördüğün hali senin kopyan olur.
+  // Başkasının ilanında bir şeyi değiştirdiğinde onunkine dokunulmaz: ilan bilgisi senin kopyan olur.
+  // Onun kararları, analizleri, durumu ve notu kopyaya seninmiş gibi geçmez; combineOther onları
+  // bir sonraki görünümde adıyla yine ekler (onu dahil ettiğin sürece).
   function ownCopyOf(view) {
     const c = JSON.parse(stableStringify(view));
     if (view._owner) c.copiedFrom = view._owner;
+    for (const k of Object.keys(view._manualBy || {})) if (c.manual) delete c.manual[k];
+    if (c.manual && !Object.keys(c.manual).length) delete c.manual;
+    if (view._trackBy) delete c.track;
+    const aiBy = view._aiBy || {};
+    if (c.ai) {
+      for (const id of Object.keys(aiBy.vision || {})) if (c.ai.vision) delete c.ai.vision[id];
+      if (c.ai.vision && !Object.keys(c.ai.vision).length) delete c.ai.vision;
+      if (aiBy.text) delete c.ai.text;
+      if (aiBy.photos) delete c.ai.photos;
+      if (!Object.keys(c.ai).length) delete c.ai;
+    }
     return c;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fotoğraf analizi: oylama ve doğruluk
+  // ---------------------------------------------------------------------------
+  // Model her fotoğrafın türünü de söyler. Kriterin views listesi varsa oy sadece o türdeki
+  // fotoğraflardan sayılır: kırmızı bir aracın dış fotoğrafı "kırmızı koltuk" oyu veremez.
+  const VIEWS = ['exterior_front', 'exterior_rear', 'exterior_side', 'interior', 'wheel', 'other'];
+  const VIEW_LABELS = { exterior_front: 'ön', exterior_rear: 'arka', exterior_side: 'yan', interior: 'iç mekân', wheel: 'jant', other: 'diğer' };
+
+  // Bir fotoğrafın cevabını oylara ekler, fotoğrafın türünü döner (anlaşılmadıysa null)
+  function countPhotoAnswer(votes, ans, todo) {
+    const view = ans && VIEWS.includes(ans.view) ? ans.view : null;
+    for (const c of todo) {
+      const a = ans && ans[c.id];
+      if (!a || typeof a !== 'object' || a.visible !== true) continue;
+      if (view && Array.isArray(c.views) && c.views.length && !c.views.includes(view)) continue;
+      if (a.answer === true) votes[c.id].yes++;
+      else if (a.answer === false) votes[c.id].no++;
+    }
+    return view;
+  }
+
+  // Yeterince net mi? Öyleyse kalan fotoğraflara bakmaya gerek yok.
+  const voteDecided = (v) => (v.yes >= 2 && v.yes > 2 * v.no) || (v.no >= 3 && v.yes === 0);
+  const voteResult = (v) => (v.yes + v.no === 0 ? null : v.yes >= 1 && v.yes >= v.no);
+
+  // Fotoğraf sırası: galerinin başı, ortası, çeyrekleri… İlk birkaç fotoğraf hep aynı açıdan
+  // (genelde ön) olduğu için sırayla gitmek yerine galeriyi baştan yayarak örnekler.
+  function spreadOrder(n) {
+    if (n <= 0) return [];
+    const out = [0];
+    const seen = new Set(out);
+    let segs = [[0, n]];
+    while (segs.length) {
+      const next = [];
+      for (const [a, b] of segs) {
+        const m = Math.floor((a + b) / 2);
+        if (!seen.has(m)) { seen.add(m); out.push(m); }
+        if (m - a > 1) next.push([a, m]);
+        if (b - m > 1) next.push([m, b]);
+      }
+      segs = next;
+    }
+    for (let i = 0; i < n; i++) if (!seen.has(i)) out.push(i);
+    return out;
+  }
+
+  // Yerel AI'ın isabeti: Var/Yok ile elle verdiğin kararları gerçek cevap sayar, aynı soruya
+  // fotoğraf analizinin verdiği cevapla karşılaştırır. Sadece senin kararların ve güncel soru sayılır.
+  function visionAccuracy(listings, cfg) {
+    const out = {};
+    for (const c of (cfg.scoring.criteria || []).filter((x) => x.vision)) out[c.id] = { id: c.id, name: c.name, n: 0, agree: 0, wrongYes: [], wrongNo: [], noAnswer: 0 };
+    for (const l of Object.values(listings)) {
+      if (!l || l._owner) continue;
+      const man = manualOf(l);
+      const vis = (l.ai && l.ai.vision) || {};
+      for (const c of (cfg.scoring.criteria || []).filter((x) => x.vision)) {
+        const m = man['crit:' + c.id];
+        const v = vis[c.id];
+        if (typeof m !== 'boolean' || manualBy(l, 'crit:' + c.id) || !v || v.question !== c.vision) continue;
+        const o = out[c.id];
+        if (v.result == null) { o.noAnswer++; continue; }
+        o.n++;
+        if (v.result === m) o.agree++;
+        else (v.result ? o.wrongYes : o.wrongNo).push({ id: l.id, title: l.title, url: l.url, yes: v.yes, no: v.no });
+      }
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------------------
@@ -587,13 +709,39 @@
       return { l, hard, score, market, flags: ruleFlags(l, cfg, hard) };
     });
     const byScore = (a, b) => b.score.total - a.score.total || (a.market?.diff ?? 0) - (b.market?.diff ?? 0);
+    const open = rows.filter((r) => !isClosed(r.l));
+    // Takip listesi: ilerlemiş olan (teklif > ekspertiz > arandı > takipte) önce
+    const stage = (r) => STATUSES.findIndex((x) => x.id === trackOf(r.l).status);
     return {
       model,
-      passed: rows.filter((r) => r.hard.status === 'gecti').sort(byScore),
-      unsure: rows.filter((r) => r.hard.status === 'belirsiz').sort(byScore),
-      rejected: rows.filter((r) => r.hard.status === 'elendi'),
+      passed: open.filter((r) => r.hard.status === 'gecti').sort(byScore),
+      unsure: open.filter((r) => r.hard.status === 'belirsiz').sort(byScore),
+      rejected: open.filter((r) => r.hard.status === 'elendi'),
+      tracked: open.filter((r) => trackOf(r.l).status && !trackOf(r.l).by).sort((a, b) => stage(b) - stage(a) || byScore(a, b)),
+      closed: rows.filter((r) => isClosed(r.l)),
       all: rows,
     };
+  }
+
+  // Arama listesindeki rozet: kayıtlı ilanın durumu tek bakışta. dim: satır soluk gösterilsin (elenmiş ya da kapanmış).
+  // delta: ilk görüldüğü fiyattan bu yana değişim (TL, düşüş negatif).
+  function listBadge(l, cfg) {
+    const t = trackOf(l);
+    const hist = l.priceHistory || [];
+    const first = hist.length ? hist[0].price : null;
+    const delta = first && l.price && first !== l.price ? l.price - first : 0;
+    const priceNote = delta ? `Fiyat: ${fmtTL(first)} → ${fmtTL(l.price)}` : '';
+    const note = t.note ? `${t.by ? t.by + ' notu' : 'Not'}: ${t.note}` : '';
+    if (isClosed(l)) return { tone: 'muted', text: statusInfo(t.status).label, dim: true, delta, title: [note, priceNote].filter(Boolean).join('\n') };
+    const hard = evalHard(l, cfg);
+    const sc = scoreListing(l, cfg);
+    const pts = `${Math.round(sc.total)}/${sc.max}`;
+    const st = t.status && !t.by ? ` · ${statusInfo(t.status).label}` : '';
+    let b;
+    if (hard.status === 'gecti') b = { tone: 'good', text: `✓ ${pts}`, why: '' };
+    else if (hard.status === 'belirsiz') b = { tone: 'warn', text: `? ${pts}`, why: 'Doğrulanamayan: ' + hard.unknowns.map((u) => u.label).join(', ') };
+    else b = { tone: 'bad', text: `✗ ${hard.fails[0]}${hard.fails.length > 1 ? ` +${hard.fails.length - 1}` : ''}`, why: 'Elendi: ' + hard.fails.join(', '), dim: true };
+    return { tone: b.tone, text: b.text + st, dim: !!b.dim, delta, title: [b.why, note, priceNote].filter(Boolean).join('\n') };
   }
 
   // ---------------------------------------------------------------------------
@@ -626,6 +774,11 @@
     if (r.hard.unknowns.length) out.push(`Doğrulanamayanlar: ${r.hard.unknowns.map((u) => u.label).join('; ')}`);
     if (r.hard.decided.length) out.push(`Elle kontrol edilenler: ${r.hard.decided.map((d) => `${d.label} → ${d.ok ? 'var/uygun' : 'yok/uygun değil'}${d.by ? ` (${d.by} kontrol etti)` : ''}`).join('; ')}`);
     if (r.flags.length) out.push(`Uyarılar: ${r.flags.join('; ')}`);
+    const tr = trackOf(l);
+    if (tr.status || tr.note) {
+      const who = tr.by ? `${tr.by} adlı arkadaşımın takibi` : 'Benim takibim';
+      out.push(`${who}: ${[tr.status ? statusInfo(tr.status).label : '', tr.note ? `not: ${tr.note.replace(/\s+/g, ' ').slice(0, 300)}` : ''].filter(Boolean).join(' · ')}`);
+    }
     const t = l.ai && l.ai.text;
     if (t && !t.error) {
       if (t.ozet) out.push(`Yerel AI özeti: ${t.ozet}`);
@@ -662,12 +815,30 @@
     return parts.join('\n');
   }
 
+  function comparePrompt(rows, cfg) {
+    return [
+      "Sahibinden.com'da ikinci el araç arıyorum ve aşağıdaki ilanlar arasında karar vermeye çalışıyorum.",
+      '',
+      'KRİTERLERİM',
+      configSummary(cfg),
+      '',
+      'Senden istediğim:',
+      '1. Bu araçları madde madde karşılaştır: fiyat/değer, km ve yaş, hasar ve boya geçmişi, donanım, risk.',
+      '2. Hangisini neden seçmem gerektiğini ve hangi koşulda fikrimin değişmesi gerektiğini yaz.',
+      '3. Notlarımda yazanları da hesaba kat. Bilmediğin bir şeyi kesinmiş gibi yazma.',
+      '',
+      `KARŞILAŞTIRILAN İLANLAR (${rows.length})`,
+      ...rows.map((r, i) => rowSummary(r, i) + '\n'),
+    ].join('\n');
+  }
+
   // ---------------------------------------------------------------------------
   // Buradan sonrası tarayıcıya özel
   // ---------------------------------------------------------------------------
   const CORE = {
     DEFAULT_CONFIG, fold, findKeyword, parseTramer, evalHard, evalCriteria, kmScore, tramerScore, scoreListing, ruleFlags, marketModel, computeRows, claudePrompt,
-    stableStringify, mergeSame, combineOther, ownCopyOf, manualOf,
+    stableStringify, mergeSame, combineOther, ownCopyOf, manualOf, STATUSES, trackOf, comparePrompt,
+    countPhotoAnswer, voteDecided, voteResult, spreadOrder, visionAccuracy, listBadge,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = CORE;
@@ -726,6 +897,11 @@
     for (const f of (c.hardFilters && c.hardFilters.requiredFeatures) || []) {
       const d = DEFAULT_CONFIG.hardFilters.requiredFeatures.find((x) => x.name === f.name);
       if (!f.unsureKeywords && d && d.unsureKeywords) f.unsureKeywords = d.unsureKeywords.slice();
+    }
+    // 0.7.0 öncesi ayarlarda görsel kriterlerin fotoğraf türü yok: aynı id'li varsayılan kriterden al
+    for (const cr of (c.scoring && c.scoring.criteria) || []) {
+      const d = DEFAULT_CONFIG.scoring.criteria.find((x) => x.id === cr.id);
+      if (cr.vision && !cr.views && d && d.views) cr.views = d.views.slice();
     }
     return c;
   }
@@ -864,12 +1040,116 @@
     const now = Date.now();
     const history = prev && prev.priceHistory ? prev.priceHistory.slice() : [];
     if (l.price && (!history.length || history[history.length - 1].price !== l.price)) history.push({ price: l.price, at: now });
-    const keep = prev ? { ai: prev.ai, manual: prev.manual, copiedFrom: prev.copiedFrom } : {};
+    const keep = prev ? { ai: prev.ai, manual: prev.manual, track: prev.track, copiedFrom: prev.copiedFrom } : {};
     const rec = { ...l, ...keep, firstSeen: prev ? prev.firstSeen : now, lastSeen: now, priceHistory: history };
     putListing(rec);
     saveQueue(loadQueue().filter((u) => u !== l.url));
     return rec;
   }
+
+  // ----- Arama sonuçları: kayıtlı ilanlara rozet, fiyat değiştiyse kaydı güncelle -----
+  // Sadece açık olan arama sayfasını okur; Sahibinden'e ek istek atmaz.
+  function searchRows() {
+    const out = [];
+    const seen = new Set();
+    document.querySelectorAll('tr.searchResultsItem, tr[data-id], li.searchResultsItem').forEach((row) => {
+      if (seen.has(row)) return;
+      seen.add(row);
+      const a = row.querySelector('a.classifiedTitle') || row.querySelector('a[href*="/ilan/"]');
+      if (!a) return;
+      const id = String(row.dataset.id || (a.getAttribute('href') || '').match(/(\d{7,})(?:\/detay)?\/?(?:[?#]|$)/)?.[1] || '');
+      if (!/^\d{7,}$/.test(id)) return;
+      const cell = row.querySelector('.searchResultsPriceValue') || [...row.querySelectorAll('td, div, span')].find((x) => x.children.length === 0 && /\d[\d.]*\s*TL/.test(x.textContent));
+      const m = cell && cell.textContent.match(/(\d{1,3}(?:\.\d{3})+|\d+)\s*TL/);
+      out.push({ row, a, id, price: m ? parseNumber(m[1]) : null });
+    });
+    return out;
+  }
+
+  const BADGE_BG = { good: '#15803d', warn: '#b45309', bad: '#b91c1c', muted: '#6b7280' };
+  const fmtShort = (n) => {
+    const a = Math.abs(n);
+    return a >= 1e6 ? (a / 1e6).toLocaleString('tr-TR', { maximumFractionDigits: 2 }) + ' mn' : a >= 1000 ? Math.round(a / 1000) + ' bin' : fmtTL(a);
+  };
+
+  function badgeEl(text, bg, title) {
+    const el = document.createElement('span');
+    el.className = 'sa-badge';
+    el.textContent = text;
+    if (title) el.title = title;
+    el.style.cssText = `display:inline-block;margin:0 0 0 6px;padding:0 7px;border-radius:9px;font:600 11px/17px -apple-system,"Segoe UI",Roboto,sans-serif;color:#fff;background:${bg};vertical-align:middle;white-space:nowrap;letter-spacing:0`;
+    return el;
+  }
+
+  function decorateSearch() {
+    const rows = searchRows();
+    if (!rows.length) return;
+    // Listede görünen fiyat kayıtlı fiyattan farklıysa kendi kaydını güncelle (ilanı açmana gerek kalmadan)
+    const now = Date.now();
+    let changed = 0;
+    for (const r of rows) {
+      const own = getListing(r.id);
+      if (!own || !r.price || own.price === r.price) continue;
+      const hist = (own.priceHistory || []).slice();
+      hist.push({ price: r.price, at: now });
+      putListing({ ...own, price: r.price, priceHistory: hist, lastSeen: now });
+      changed++;
+    }
+    if (changed) {
+      scheduleSync();
+      toast(`${changed} kayıtlı ilanın fiyatı değişmiş, güncellendi.`);
+    }
+    const cfg = loadConfig();
+    const all = loadAllListings();
+    for (const r of rows) {
+      r.row.querySelectorAll('.sa-badge').forEach((x) => x.remove());
+      const l = all[r.id];
+      let b;
+      try {
+        b = l ? listBadge(l, cfg) : { tone: 'muted', text: 'yeni', title: 'Henüz açmadığın ilan', dim: false, delta: 0 };
+      } catch (e) {
+        continue; // bozuk bir kayıt (ör. içe aktarılmış) diğer satırları engellemesin
+      }
+      const els = [badgeEl(b.text, BADGE_BG[b.tone], b.title)];
+      if (b.delta) els.push(badgeEl(`${b.delta < 0 ? '↓' : '↑'} ${fmtShort(b.delta)}`, b.delta < 0 ? BADGE_BG.good : BADGE_BG.bad, b.title));
+      if (l && l._owner) els.push(badgeEl(l._owner, BADGE_BG.muted, `${l._owner} kaydetmiş`));
+      r.a.after(...els);
+      r.row.style.opacity = b.dim ? '0.5' : '';
+    }
+  }
+
+  // Kaydedilmemiş not taslağını sessizce kaydet (değişmediyse dokunma)
+  function flushNoteDraft(id) {
+    const d = state.noteDrafts[id];
+    if (d == null) return;
+    const t = trackOf(loadAllListings()[id] || {});
+    const saved = t.by ? '' : t.note;
+    if (d.trim() === saved) delete state.noteDrafts[id];
+    else setTrack(id, 'note', d.trim(), true);
+  }
+
+  let decorateTimer = null;
+  const queueDecorate = () => {
+    if (isDetailPage()) return;
+    clearTimeout(decorateTimer);
+    decorateTimer = setTimeout(() => {
+      try {
+        decorateSearch();
+      } catch (e) {
+        // bir sonraki değişiklikte tekrar denenir
+      }
+    }, 250);
+  };
+
+  // Sonuçlar sayfa yenilenmeden değişirse (sıralama, sayfa) rozetleri tazele; kendi rozetlerimizin değişimini sayma
+  function watchSearch() {
+    new MutationObserver((muts) => {
+      const ours = muts.every((m) => [...m.addedNodes, ...m.removedNodes].every((n) => n.nodeType === 1 && n.classList.contains('sa-badge')));
+      if (!ours) queueDecorate();
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
+  const idFromUrl = (u) => (String(u || '').match(/(\d{7,})(?:\/detay)?\/?(?:[?#]|$)/) || [])[1] || null;
 
   function collectSearchLinks() {
     let links = [...document.querySelectorAll('a.classifiedTitle')].map((a) => a.href);
@@ -948,27 +1228,30 @@
     }
   }
 
-  function sample(arr, k) {
-    if (arr.length <= k) return arr.slice();
-    if (k <= 1) return [arr[0]];
-    return Array.from({ length: k }, (_, i) => arr[Math.round((i * (arr.length - 1)) / (k - 1))]);
-  }
-
   async function analyzeVision(l, cfg, todo, run, onStep) {
     const prompt = [
       'You are checking ONE photo from a used car listing.',
-      'For each key below, return {"visible": true|false, "answer": true|false}.',
+      'First classify the photo as "view", one of: "exterior_front", "exterior_rear", "exterior_side", "interior", "wheel", "other".',
+      '("interior" = seats, dashboard or cabin; "wheel" = close-up of a wheel or rim.)',
+      'Then for each key below, return {"visible": true|false, "answer": true|false}.',
       '"visible" is true only if the relevant part of the car is clearly visible in THIS photo. If it is not visible, set "answer" to false.',
       '',
       ...todo.map((c) => `- "${c.id}": ${c.vision}`),
       '',
-      `Reply with JSON only, with exactly these keys: ${todo.map((c) => c.id).join(', ')}.`,
+      `Reply with JSON only, with exactly these keys: view, ${todo.map((c) => c.id).join(', ')}.`,
     ].join('\n');
     const votes = Object.fromEntries(todo.map((c) => [c.id, { question: c.vision, yes: 0, no: 0 }]));
-    const imgs = sample(l.images || [], cfg.ollama.maxImages);
-    const photos = { tried: 0, ok: 0, missing: 0, failed: 0, lastError: null };
+    // Fotoğraf adresi arkadaştan da gelebilir: sadece Sahibinden'in görsel sunucusu (yerel ağa istek atılmasın)
+    const usable = (l.images || []).filter((u) => safeImg(u));
+    const imgs = spreadOrder(usable.length).slice(0, cfg.ollama.maxImages).map((i) => usable[i]);
+    const photos = { tried: 0, ok: 0, missing: 0, failed: 0, lastError: null, views: {}, early: false };
     for (let i = 0; i < imgs.length; i++) {
       if (run.cancel) break;
+      // Bütün sorular netleştiyse kalan fotoğraflara bakma
+      if (photos.ok >= 2 && todo.every((c) => voteDecided(votes[c.id]))) {
+        photos.early = true;
+        break;
+      }
       if (photos.missing >= 2 && photos.ok === 0) break; // fotoğraflar silinmiş, ilan muhtemelen kaldırılmış
       onStep(`fotoğraf ${i + 1}/${imgs.length}` + (photos.failed + photos.missing ? ` · ${photos.failed + photos.missing} indirilemedi` : ''));
       photos.tried++;
@@ -991,16 +1274,10 @@
       run.consecutiveFails = 0;
       const ans = await ollamaJSON(cfg, prompt, [img.b64]); // Ollama hatası tüm analizi durdurur
       photos.ok++;
-      for (const c of todo) {
-        const a = ans && ans[c.id];
-        if (a && typeof a === 'object') {
-          if (a.visible !== true) continue;
-          if (a.answer === true) votes[c.id].yes++;
-          else if (a.answer === false) votes[c.id].no++;
-        }
-      }
+      const view = countPhotoAnswer(votes, ans, todo) || 'other';
+      photos.views[view] = (photos.views[view] || 0) + 1;
     }
-    for (const v of Object.values(votes)) v.result = v.yes + v.no === 0 ? null : v.yes >= 1 && v.yes >= v.no;
+    for (const v of Object.values(votes)) v.result = voteResult(v);
     return { votes, photos };
   }
 
@@ -1225,8 +1502,9 @@
 
   function afterSync(res) {
     showSync(syncLabel());
+    if (res && (res.pulledOwn || res.pulledOthers || res.pulledConfig)) queueDecorate();
     // Yeni ilan ya da ayar geldiyse listeyi tazele; ayar ve paylaşım sekmelerinde yazdıklarını silmemek için dokunma
-    if (res && (res.pulledOwn || res.pulledOthers || res.pulledConfig) && state.open && (state.tab === 'sira' || state.tab === 'analiz')) render();
+    if (res && (res.pulledOwn || res.pulledOthers || res.pulledConfig) && state.open && ['sira', 'analiz', 'kars'].includes(state.tab)) render();
     // Bildirim yeniden çizimden sonra: render() paneli baştan kurduğu için önce gösterilen bildirim silinirdi
     if (res && res.pulledConfig) toast(`Ayarlar ${res.pulledConfig} bilgisayarından güncellendi. Öncekiler Ayarlar sekmesinde yedekte.`, 5000);
     if (res && res.badConfig) toast(`⚠ ${res.badConfig} bilgisayarından gelen ayarlar bozuk olduğu için alınmadı; buradaki ayarlar kullanılıyor. O bilgisayarda ayarları kontrol edip tekrar kaydet.`, 8000);
@@ -1440,7 +1718,7 @@
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button:disabled { opacity: .5; cursor: default; }
     .fab button { box-shadow: 0 2px 10px rgba(0,0,0,.18); }
-    .toast { position: fixed; right: 16px; bottom: 64px; z-index: 2147483646; background: var(--bg); border: 1px solid var(--line);
+    .toast { position: fixed; right: 16px; bottom: 64px; z-index: 2147483647; background: var(--bg); border: 1px solid var(--line);
       border-radius: 8px; padding: 8px 12px; box-shadow: 0 2px 10px rgba(0,0,0,.18); max-width: 360px; }
     .panel { position: fixed; inset: 4vh 2vw; z-index: 2147483647; background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
       box-shadow: 0 10px 40px rgba(0,0,0,.3); display: flex; flex-direction: column; overflow: hidden; max-width: 1100px; margin: 0 auto; }
@@ -1495,11 +1773,29 @@
     .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
     .stat { background: var(--bg2); border-radius: 8px; padding: 10px; }
     .stat b { display: block; font-size: 16px; }
+    .chip { display: inline-block; font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--bg2); border: 1px solid var(--line); white-space: nowrap; }
+    .chip.st-arandi, .chip.st-ekspertiz, .chip.st-teklif { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .chip.st-vazgecti, .chip.st-satildi { text-decoration: line-through; }
+    .track { margin: 2px 0 10px; }
+    .track .mbtns { flex-wrap: wrap; margin: 0; }
+    .mini.st.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    textarea.note { min-height: 56px; height: 56px; font-family: inherit; font-size: 13px; margin: 6px 0 4px; padding: 6px 8px; resize: vertical; }
+    td.pick { width: 1%; white-space: nowrap; }
+    td.pick input { margin: 0 4px 0 0; vertical-align: middle; }
+    .card { position: fixed; right: 16px; bottom: 64px; z-index: 2147483646; width: 360px; max-width: calc(100vw - 32px); background: var(--bg);
+      border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: 0 4px 18px rgba(0,0,0,.22); }
+    .card h3 { font-size: 13px; margin: 0 0 6px; }
+    .cmp { table-layout: fixed; }
+    .cmp th:first-child { width: 150px; }
+    .cmp td, .cmp th { overflow-wrap: anywhere; }
+    .cmp img { width: 100%; height: 120px; object-fit: cover; border-radius: 6px; display: block; margin-bottom: 4px; background: var(--bg2); }
+    .cmp .best { color: var(--good); font-weight: 700; }
+    .cmp .sub { font-size: 11px; }
   `;
 
   let host;
   let root;
-  let state = { open: false, tab: 'sira', status: '', openRows: new Set(), tuneOpen: false, rejOpen: false, allCache: null, tuneCfg: null, tuneStart: null, tuneTimer: null, tuneDirty: new Map() };
+  let state = { open: false, tab: 'sira', status: '', openRows: new Set(), tuneOpen: false, rejOpen: false, allCache: null, tuneCfg: null, tuneStart: null, tuneTimer: null, tuneDirty: new Map(), noteDrafts: {}, cardOpen: false, currentId: null };
 
   function mount() {
     host = document.createElement('div');
@@ -1508,6 +1804,13 @@
     root = host.attachShadow({ mode: 'open' });
     root.addEventListener('click', onClick);
     root.addEventListener('input', onInput);
+    // Not alanından çıkınca (ör. "Sonraki ilan"a basınca) yazılan not kaybolmasın
+    root.addEventListener('focusout', (e) => {
+      if (e.target.matches && e.target.matches('textarea[data-note]')) flushNoteDraft(e.target.dataset.note);
+    });
+    window.addEventListener('pagehide', () => {
+      for (const id of Object.keys(state.noteDrafts)) flushNoteDraft(id);
+    });
     render();
   }
 
@@ -1540,6 +1843,59 @@
 
   const byTag = (by) => (by ? ` <span class="muted">(${esc(by)})</span>` : '');
 
+  // Arkadaştan gelen ilan verisi de ekrana basılıyor: link sadece sahibinden'e, fotoğraf sadece shbdn'e gidebilir
+  const safeUrl = (u) => (/^https:\/\/(www\.)?sahibinden\.com\//.test(String(u || '')) ? u : '#');
+  const safeImg = (u) => (/^https:\/\/[a-z0-9]+\.shbdn\.com\//.test(String(u || '')) ? u : '');
+
+  function statusChip(l) {
+    const t = trackOf(l);
+    const out = [];
+    if (t.status) out.push(`<span class="chip st-${t.status}"${t.by ? ` title="${esc(t.by)} işaretledi"` : ''}>${esc(statusInfo(t.status).label)}${t.by ? ' · ' + esc(t.by) : ''}</span>`);
+    if (t.note) out.push(`<span title="${esc((t.by ? t.by + ': ' : '') + t.note)}">📝</span>`);
+    return out.length ? ' ' + out.join(' ') : '';
+  }
+
+  // Durum düğmeleri ve not alanı. Başkasından gelen durum/not sadece gösterilir; düğmeler senin kararın.
+  function trackBlock(l) {
+    const t = trackOf(l);
+    const own = t.by ? { status: null, note: '' } : t;
+    const id = esc(l.id);
+    const chips = STATUSES.map((x) => `<button class="mini st${own.status === x.id ? ' on' : ''}" data-track-status="${x.id}" data-id="${id}">${esc(x.label)}</button>`).join('')
+      + (own.status ? `<button class="mini" data-track-status="" data-id="${id}">temizle</button>` : '');
+    const other = t.by ? `<div class="muted" style="margin-top:4px">${esc(t.by)}: ${esc([t.status ? statusInfo(t.status).label : '', t.note].filter(Boolean).join(' · '))}</div>` : '';
+    const draft = state.noteDrafts[l.id];
+    return `<div class="track"><span class="mbtns">${chips}</span>${other}
+      <textarea class="note" data-note="${id}" placeholder="Not: satıcıyla konuştukların, ekspertiz sonucu, pazarlık…">${esc(draft != null ? draft : own.note)}</textarea>
+      <button class="mini" data-note-save="${id}">Notu kaydet</button>${draft != null && draft !== own.note ? ' <span class="warn" style="font-size:12px">kaydedilmedi</span>' : ''}</div>`;
+  }
+
+  // Karşılaştırma seçimi bu tarayıcıda durur (en fazla 4 ilan)
+  const MAX_CMP = 4;
+  const loadCmp = () => GM_getValue('compare', []);
+  const saveCmp = (ids) => GM_setValue('compare', ids);
+
+  // Durum ya da not değişti. İlan başkasınınsa onunkine dokunulmaz, sende kopyası oluşur (Var/Yok gibi).
+  // quiet: not alanından çıkınca ya da sayfa kapanırken sessizce kaydet (yeniden çizme, araya giren tıklama kaybolmasın)
+  function setTrack(id, field, v, quiet = false) {
+    let l = getListing(id);
+    let copied = false;
+    if (!l) {
+      const view = loadAllListings()[id];
+      if (!view) return;
+      l = ownCopyOf(view);
+      copied = true;
+    }
+    l.track = { ...(l.track || {}), [field]: { v, at: Date.now() } };
+    putListing(l);
+    if (field === 'note') delete state.noteDrafts[id];
+    scheduleSync();
+    if (quiet) return;
+    render();
+    const what = field === 'note' ? (v ? 'Not kaydedildi' : 'Not silindi') : v ? `Durum: ${statusInfo(v).label}` : 'Durum temizlendi';
+    const closed = field === 'status' && v && statusInfo(v).closed ? ' · ilan sıralamadan çıktı, "Kapananlar"da duruyor' : '';
+    toast(what + closed + (copied ? ` · ilanın kopyası senin verine eklendi (kaynak: ${l.copiedFrom})` : ''));
+  }
+
   // Doğrulanamayan şartlar: ilan satırının altında, ayrıntıları açmadan cevaplanabilsin
   function askBlock(r) {
     if (!r.hard.unknowns.length) return '';
@@ -1563,7 +1919,7 @@
       .map((x) => `<li class="${x.ok === true ? '' : x.ok === false ? 'bad' : 'warn'}">${esc(x.name)}: <b>şart</b> <span class="muted">${esc(x.via)}</span>${manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key], man[x.key] !== undefined && !x.by)}</li>`)
       .join('');
     const nonOrig = l.parts ? Object.entries(l.parts).filter(([, st]) => st !== 'orijinal') : [];
-    let html = `<div class="detail"><b>Puan dökümü</b><ul>${featLines}${lines}</ul>`;
+    let html = `<div class="detail"><b>Durum ve not</b>${trackBlock(l)}<b>Puan dökümü</b><ul>${featLines}${lines}</ul>`;
     const decided = r.hard.decided.filter((d) => !d.key.startsWith('feat:')); // donanımlar yukarıda zaten var
     if (decided.length) {
       html += `<b>Elle kontroller</b><ul>${decided
@@ -1575,7 +1931,9 @@
     html += `<b>Boya/değişen</b> <span class="muted">${l.parts && Object.keys(l.parts).length ? (nonOrig.length ? esc(nonOrig.map(([p, st]) => `${p}: ${st}`).join(', ')) : 'tüm parçalar orijinal') : 'okunamadı'}</span>`;
     const ph = l.ai && l.ai.photos;
     if (ph) {
-      const parts = [`${ph.ok}/${ph.tried} incelendi`];
+      const parts = [`${ph.ok}/${ph.tried} incelendi${ph.early ? ' (sorular netleşince erken bitti)' : ''}`];
+      const vs = Object.entries(ph.views || {}).map(([k, n]) => `${n} ${VIEW_LABELS[k] || k}`);
+      if (vs.length) parts.push(vs.join(', '));
       if (ph.failed) parts.push(`${ph.failed} indirilemedi${ph.lastError ? ` (${ph.lastError})` : ''}`);
       if (ph.missing) parts.push(`${ph.missing} silinmiş, ilan kaldırılmış olabilir`);
       html += `<div style="margin-top:6px"><b>Fotoğraflar</b> <span class="${ph.failed || ph.missing ? 'warn' : 'muted'}">${esc(parts.join(' · '))}</span></div>`;
@@ -1594,18 +1952,19 @@
 
   function table(rows, startIdx) {
     if (!rows.length) return '<p class="muted">Henüz ilan yok.</p>';
-    return `<table><thead><tr><th>#</th><th>İlan</th><th class="num">Fiyat</th><th class="num">Yıl</th><th class="num">KM</th><th class="num">Tramer</th><th class="num">Piyasa</th><th class="num">Puan</th></tr></thead><tbody>${rows
+    const cmp = new Set(loadCmp());
+    return `<table><thead><tr><th title="Karşılaştırmak için seç">#</th><th>İlan</th><th class="num">Fiyat</th><th class="num">Yıl</th><th class="num">KM</th><th class="num">Tramer</th><th class="num">Piyasa</th><th class="num">Puan</th></tr></thead><tbody>${rows
       .map((r, i) => {
         const tr = r.score.tramer.amount;
         return `<tr>
-          <td class="num">${startIdx + i + 1}</td>
-          <td><a href="${esc(r.l.url)}" target="_blank">${esc(r.l.title)}</a>${r.flags.length ? ` <span class="warn" title="${esc(r.flags.join('\n'))}">⚠ ${r.flags.length}</span>` : ''}${
+          <td class="num pick"><input type="checkbox" data-cmp="${esc(r.l.id)}" title="Karşılaştırmaya ekle" ${cmp.has(String(r.l.id)) ? 'checked' : ''}>${startIdx + i + 1}</td>
+          <td><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)}${r.flags.length ? ` <span class="warn" title="${esc(r.flags.join('\n'))}">⚠ ${r.flags.length}</span>` : ''}${
             r.l._owner ? ` <span class="muted" title="Bu ilan sende yok, dahil ettiğin kişiden geliyor. Bir şeyini değiştirirsen sende kopyası oluşur.">· kaynak: ${esc(r.l._owner)}</span>`
             : r.l.copiedFrom ? ` <span class="muted">· kopya (kaynak: ${esc(r.l.copiedFrom)})</span>` : ''}
             ${askBlock(r)}
             <details ${state.openRows.has(r.l.id) ? 'open' : ''}><summary data-row="${esc(r.l.id)}">ayrıntılar</summary>${detailBlock(r)}</details></td>
           <td class="num">${fmtTL(r.l.price)}</td>
-          <td class="num">${r.l.year ?? '–'}</td>
+          <td class="num">${esc(r.l.year ?? '–')}</td>
           <td class="num">${fmtNum(r.l.km)}</td>
           <td class="num">${tr == null ? '<span class="muted">?</span>' : tr === 0 ? 'yok' : fmtNum(tr)}</td>
           <td class="num">${marketCell(r)}</td>
@@ -1655,6 +2014,10 @@
   }
 
   function onInput(e) {
+    if (e.target.matches && e.target.matches('textarea[data-note]')) {
+      state.noteDrafts[e.target.dataset.note] = e.target.value;
+      return;
+    }
     const t = e.target.closest && e.target.closest('[data-tune]');
     if (!t) return;
     if (!state.tuneCfg) state.tuneCfg = loadConfig();
@@ -1718,6 +2081,7 @@
       <button class="primary" data-action="ai" ${aiRunning ? 'disabled' : ''}>Yerel AI analizini çalıştır</button>
       ${aiRunning ? '<button data-action="ai-stop">Durdur</button>' : ''}
       <button data-action="claude" ${result.passed.length + result.unsure.length ? '' : 'disabled'}>Claude için kopyala</button>
+      ${loadCmp().length ? `<button data-tab="kars">Karşılaştır (${loadCmp().length})</button>` : ''}
       <span class="muted" data-status>${esc(state.status)}</span></div>`;
     html += `<details class="tune" ${state.tuneOpen ? 'open' : ''}><summary data-tune-toggle>⚙ Puanları ve filtreleri ayarla</summary>
       <p class="muted">Kaydırdıkça sıralama hemen değişir, ayar kendiliğinden kaydedilir${syncReady() ? ' ve diğer bilgisayarlarına gider' : ''}.
@@ -1727,23 +2091,109 @@
 
   function rankingBody(result) {
     const fromOthers = result.all.filter((r) => r.l._owner).length;
-    let html = `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi</p>`;
-    html += `<h2>En iyi ${MAX_TOP}</h2>` + table(result.passed.slice(0, MAX_TOP), 0);
-    if (result.passed.length > MAX_TOP) {
-      html += `<h2>Filtreyi geçen diğer ${result.passed.length - MAX_TOP} ilan <span class="muted">(puana göre)</span></h2>` + table(result.passed.slice(MAX_TOP), MAX_TOP);
+    let html = `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi${result.closed.length ? ` · ${result.closed.length} kapandı` : ''}</p>`;
+    // Takip ettiklerin üstte bir kez gösterilir; alttaki tablolarda tekrar edilmez (aynı ilanın iki not alanı olmasın)
+    const tracked = new Set(result.tracked.map((r) => r.l.id));
+    const rest = (rows) => rows.filter((r) => !tracked.has(r.l.id));
+    if (result.tracked.length) html += `<h2>Takip ettiklerin <span class="muted">(ilerlemiş olan önce)</span></h2>` + table(result.tracked, 0);
+    const passed = rest(result.passed);
+    const inTop = result.passed.slice(0, MAX_TOP).filter((r) => tracked.has(r.l.id)).length;
+    html += `<h2>En iyi ${MAX_TOP}${inTop ? ` <span class="muted">(${inTop} tanesi yukarıda, takip ettiklerinde)</span>` : ''}</h2>` + table(passed.slice(0, MAX_TOP - inTop), 0);
+    if (passed.length > MAX_TOP - inTop) {
+      html += `<h2>Filtreyi geçen diğer ${passed.length - (MAX_TOP - inTop)} ilan <span class="muted">(puana göre)</span></h2>` + table(passed.slice(MAX_TOP - inTop), MAX_TOP - inTop);
     }
-    if (result.unsure.length) {
-      html += `<h2>Kontrol edilecekler <span class="muted">(ilandan doğrulanamayan şartlar — ilana bakıp kendin işaretle)</span></h2>` + table(result.unsure.slice(0, MAX_TOP), 0);
+    const unsure = rest(result.unsure);
+    if (unsure.length) {
+      html += `<h2>Kontrol edilecekler <span class="muted">(ilandan doğrulanamayan şartlar — ilana bakıp kendin işaretle)</span></h2>` + table(unsure.slice(0, MAX_TOP), 0);
     }
     if (result.rejected.length) {
       html += `<details ${state.rejOpen ? 'open' : ''}><summary data-rej-toggle>Elenen ${result.rejected.length} ilan</summary><ul>${result.rejected
-        .map((r) => `<li><a href="${esc(r.l.url)}" target="_blank">${esc(r.l.title)}</a> <span class="bad">${esc(r.hard.fails.join(', '))}</span>${r.hard.decided
+        .map((r) => `<li><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)} <span class="bad">${esc(r.hard.fails.join(', '))}</span>${r.hard.decided
           .filter((d) => !d.ok)
           .map((d) => manualBtns(r.l.id, d.key, d.yes, d.no, false, !d.by))
           .join('')}</li>`)
         .join('')}</ul></details>`;
     }
+    if (result.closed.length) {
+      html += `<details ${state.closedOpen ? 'open' : ''}><summary data-closed-toggle>Kapananlar: ${result.closed.length} ilan <span class="muted">(vazgeçilen ya da satılan; sıralamaya ve AI analizine girmez)</span></summary><ul>${result.closed
+        .map((r) => `<li><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)} <span class="muted">${esc(trackOf(r.l).note.slice(0, 120))}</span>
+          <button class="mini" data-track-status="" data-id="${esc(r.l.id)}" title="Durumu temizle, ilan sıralamaya geri dönsün">geri al</button></li>`)
+        .join('')}</ul></details>`;
+    }
     return html;
+  }
+
+  // ----- Karşılaştırma: 2–4 ilan yan yana, her satırda en iyi değer vurgulu -----
+  function renderCompare(result) {
+    const byId = new Map(result.all.map((r) => [String(r.l.id), r]));
+    const ids = loadCmp().filter((id) => byId.has(id));
+    if (ids.length !== loadCmp().length) saveCmp(ids);
+    const rows = ids.map((id) => byId.get(id));
+    const hint = '<p class="muted">Sıralama sekmesinde ilanların solundaki kutucuklardan en az 2, en fazla 4 ilan seç.</p>';
+    if (rows.length < 2) {
+      return hint + (rows.length ? `<p>Seçili: <a href="${esc(safeUrl(rows[0].l.url))}" target="_blank">${esc(rows[0].l.title)}</a> <button class="mini" data-cmp-remove="${esc(rows[0].l.id)}">çıkar</button></p>` : '');
+    }
+    // En iyi değer: hepsi aynıysa vurgulanmaz
+    const bestOf = (vals, dir) => {
+      const xs = vals.filter((v) => v != null);
+      if (xs.length < 2 || xs.every((v) => v === xs[0])) return () => false;
+      const b = dir === 'min' ? Math.min(...xs) : Math.max(...xs);
+      return (v) => v === b;
+    };
+    const line = (label, cells, sub = '') => `<tr><th>${esc(label)}${sub ? `<div class="muted sub">${esc(sub)}</div>` : ''}</th>${cells.join('')}</tr>`;
+    const numRow = (label, get, dir, fmt) => {
+      const vals = rows.map(get);
+      const isBest = bestOf(vals, dir);
+      return line(label, vals.map((v) => `<td class="${isBest(v) ? 'best' : ''}">${v == null ? '<span class="muted">?</span>' : fmt(v)}</td>`));
+    };
+    const info = (r, k) => {
+      const key = Object.keys(r.l.info || {}).find((x) => fold(x) === fold(k));
+      return key ? r.l.info[key] : '';
+    };
+    let html = `<div class="bar"><button data-action="cmp-claude">Bu karşılaştırmayı Claude için kopyala</button><button data-action="cmp-clear">Seçimi temizle</button><span class="muted" data-status>${esc(state.status)}</span></div>`;
+    html += '<table class="cmp"><thead><tr><th></th>';
+    html += rows.map((r) => {
+      const img = safeImg((r.l.images || [])[0]);
+      return `<th>${img ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}<a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)}
+        <div><button class="mini" data-cmp-remove="${esc(r.l.id)}">çıkar</button></div></th>`;
+    }).join('') + '</tr></thead><tbody>';
+    html += numRow('Puan', (r) => Math.round(r.score.total), 'max', (v) => `<b>${v}</b><span class="muted">/${rows[0].score.max}</span>`);
+    html += numRow('Fiyat', (r) => r.l.price, 'min', fmtTL);
+    html += numRow('Piyasaya göre', (r) => (r.market ? Math.round(r.market.diff * 1000) / 10 : null), 'min', (v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`);
+    html += numRow('Yıl', (r) => r.l.year, 'max', (v) => esc(String(v)));
+    html += numRow('KM', (r) => r.l.km, 'min', fmtNum);
+    html += numRow('Tramer', (r) => r.score.tramer.amount, 'min', (v) => (v === 0 ? 'kayıt yok' : fmtTL(v)));
+    const nonOrig = (r) => Object.entries(r.l.parts || {}).filter(([, st]) => st !== 'orijinal');
+    const someDirty = rows.some((r) => nonOrig(r).length || !Object.keys(r.l.parts || {}).length);
+    html += line('Boya / değişen', rows.map((r) => {
+      const p = r.l.parts || {};
+      if (!Object.keys(p).length) return '<td class="muted">okunamadı</td>';
+      const bad = nonOrig(r);
+      return `<td class="${!bad.length && someDirty ? 'best' : ''}">${bad.length ? esc(bad.map(([k, st]) => `${k}: ${st}`).join(', ')) : 'tümü orijinal'}</td>`;
+    }));
+    const feats = (rows[0].hard.feats || []).map((f) => f.name);
+    for (const name of feats) {
+      html += line(name, rows.map((r) => {
+        const f = (r.hard.feats || []).find((x) => x.name === name);
+        return `<td class="${f && f.ok === true ? 'good' : f && f.ok === false ? 'bad' : 'warn'}">${f ? (f.ok === true ? '✓' : f.ok === false ? '✗' : '?') : '–'} <span class="muted sub">${esc(f ? f.via : '')}</span></td>`;
+      }), 'şart');
+    }
+    for (const name of rows[0].score.lines.map((x) => x.name).filter((n) => n !== 'KM' && n !== 'Tramer')) {
+      html += line(name, rows.map((r) => {
+        const x = r.score.lines.find((y) => y.name === name);
+        return x ? `<td class="${x.points > 0 ? 'good' : ''}">${x.points > 0 ? '✓' : '✗'} ${Math.round(x.points)}/${x.max}${x.pending ? ' ⏳' : ''} <div class="muted sub">${esc(x.via || '')}</div></td>` : '<td>–</td>';
+      }), 'puan');
+    }
+    for (const k of ['Renk', 'Kimden', 'Motor Gücü', 'Vites']) {
+      if (rows.some((r) => info(r, k))) html += line(k, rows.map((r) => `<td>${esc(info(r, k)) || '<span class="muted">–</span>'}</td>`));
+    }
+    html += line('Uyarılar', rows.map((r) => `<td>${r.flags.length ? r.flags.map((f) => `<div class="warn">${esc(f)}</div>`).join('') : '<span class="muted">yok</span>'}</td>`));
+    html += line('Yerel AI', rows.map((r) => {
+      const t = r.l.ai && r.l.ai.text;
+      return `<td>${t && !t.error ? esc(t.ozet) : '<span class="muted">analiz yok</span>'}</td>`;
+    }));
+    html += line('Durum ve not', rows.map((r) => `<td>${trackBlock(r.l)}</td>`));
+    return html + '</tbody></table>';
   }
 
   function renderChart(result) {
@@ -1768,9 +2218,30 @@
     const ordered = [...pts].sort((a, b) => (topIds.has(a.l.id) ? 1 : passIds.has(a.l.id) ? 0.5 : 0) - (topIds.has(b.l.id) ? 1 : passIds.has(b.l.id) ? 0.5 : 0));
     for (const r of ordered) {
       const cls = topIds.has(r.l.id) ? 'top' : passIds.has(r.l.id) ? 'pass' : '';
-      svg += `<a href="${esc(r.l.url)}" target="_blank"><circle class="dot ${cls}" cx="${X(r.l.km)}" cy="${Y(r.l.price)}" r="${cls === 'top' ? 6 : 4.5}"><title>${esc(r.l.title)}\n${fmtTL(r.l.price)} · ${fmtNum(r.l.km)} km · ${r.l.year ?? ''}</title></circle></a>`;
+      svg += `<a href="${esc(safeUrl(r.l.url))}" target="_blank"><circle class="dot ${cls}" cx="${X(r.l.km)}" cy="${Y(r.l.price)}" r="${cls === 'top' ? 6 : 4.5}"><title>${esc(r.l.title)}\n${fmtTL(r.l.price)} · ${fmtNum(r.l.km)} km · ${esc(r.l.year ?? '')}</title></circle></a>`;
     }
     return svg + '</svg>';
+  }
+
+  function renderAccuracy() {
+    const acc = Object.values(visionAccuracy(loadListings(), loadConfig()));
+    if (!acc.length) return '';
+    const total = acc.reduce((a, x) => a + x.n, 0);
+    let html = `<h2>Yerel AI'ın fotoğraf isabeti</h2><p class="muted">AI'ın fotoğraftan verdiği cevap, aynı kriter için <b>Var/Yok</b> ile verdiğin kararla karşılaştırılır. AI analizinden sonra ilanlara bakıp işaretledikçe dolar${total ? '' : '; henüz karşılaştırılacak ilan yok'}.</p>`;
+    if (!total) return html;
+    html += `<table><thead><tr><th>Kriter</th><th class="num">Karşılaştırılan</th><th class="num">İsabet</th><th class="num">Yanlış "var"</th><th class="num">Yanlış "yok"</th><th class="num">Cevap çıkmadı</th></tr></thead><tbody>${acc
+      .map((x) => {
+        const pct = x.n ? Math.round((x.agree / x.n) * 100) : null;
+        return `<tr><td>${esc(x.name)}</td><td class="num">${x.n}</td><td class="num ${pct == null ? '' : pct >= 80 ? 'good' : pct >= 60 ? 'warn' : 'bad'}">${pct == null ? '–' : pct + '%'}</td><td class="num">${x.wrongYes.length}</td><td class="num">${x.wrongNo.length}</td><td class="num">${x.noAnswer}</td></tr>`;
+      })
+      .join('')}</tbody></table>`;
+    const wrong = acc.flatMap((x) => [...x.wrongYes.map((w) => ({ ...w, c: x.name, said: 'var' })), ...x.wrongNo.map((w) => ({ ...w, c: x.name, said: 'yok' }))]);
+    if (wrong.length) {
+      html += `<details><summary>AI'ın yanıldığı ${wrong.length} durum</summary><ul>${wrong
+        .map((w) => `<li>${esc(w.c)}: AI "${w.said}" dedi (${Number(w.yes) || 0} evet / ${Number(w.no) || 0} hayır) · <a href="${esc(safeUrl(w.url))}" target="_blank">${esc(w.title)}</a></li>`)
+        .join('')}</ul></details>`;
+    }
+    return html;
   }
 
   function renderAnalysis(result) {
@@ -1788,9 +2259,10 @@
     else html += `<p class="muted">Model ${md.n} ilandan kuruldu: fiyat ≈ sabit + yıl etkisi + kilometre etkisi. Donanım farkını hesaba katmaz; "Piyasa" sütunu bu tahmine göre ilanın ne kadar ucuz (−) veya pahalı (+) olduğunu gösterir.</p>`;
     html += `<div class="legend muted"><span><i style="background:var(--accent)"></i>En iyi ${MAX_TOP}</span><span><i style="background:var(--good)"></i>Filtreleri geçen</span><span><i style="background:var(--dot)"></i>Diğer</span></div>`;
     html += renderChart(result);
+    html += renderAccuracy();
     if (cheap.length) {
       html += '<h2>Kriterleri geçenler içinde piyasaya göre en uygunlar</h2><ul>';
-      html += cheap.map((r) => `<li><a href="${esc(r.l.url)}" target="_blank">${esc(r.l.title)}</a> · ${fmtTL(r.l.price)} · ${marketCell(r)}</li>`).join('');
+      html += cheap.map((r) => `<li><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a> · ${fmtTL(r.l.price)} · ${marketCell(r)}</li>`).join('');
       html += '</ul>';
     }
     return html;
@@ -1882,10 +2354,21 @@
     const queue = loadQueue();
     const count = countListings();
     let fab = '<div class="fab">';
+    let card = '';
+    if (!state.open && isDetailPage() && state.currentId) {
+      const v = loadAllListings()[state.currentId];
+      if (v) {
+        fab += `<button data-action="card">📝 ${trackOf(v).status && !trackOf(v).by ? esc(statusInfo(trackOf(v).status).label) : 'Not / durum'}</button>`;
+        if (state.cardOpen) card = `<div class="card"><h3>${esc(v.title)}</h3>${trackBlock(v)}</div>`;
+      }
+    }
     if (!state.open && isDetailPage() && queue.length) fab += `<button class="primary" data-action="next">Sonraki ilan → (${queue.length})</button>`;
     if (!state.open && !isDetailPage()) {
-      const links = collectSearchLinks();
-      if (links.length) fab += `<button data-action="enqueue">Sayfadaki ${links.length} ilanı kuyruğa ekle</button>`;
+      const saved = new Set(Object.keys(loadAllListings()));
+      const key = (u) => idFromUrl(u) || u;
+      const queued = new Set(queue.map(key));
+      const fresh = collectSearchLinks().filter((u) => !saved.has(key(u)) && !queued.has(key(u)));
+      if (fresh.length) fab += `<button data-action="enqueue">Sayfadaki ${fresh.length} yeni ilanı kuyruğa ekle</button>`;
     }
     fab += `<button data-action="toggle">🚗 Asistan (${count})</button></div>`;
 
@@ -1894,8 +2377,10 @@
       const cfg = loadConfig();
       state.allCache = loadAllListings();
       const result = computeRows(state.allCache, cfg);
-      const tabs = [['sira', 'Sıralama'], ['analiz', 'Piyasa analizi'], ['ayar', 'Ayarlar'], ['veri', 'Veri'], ['paylasim', 'Paylaşım']];
-      const views = { sira: () => renderRanking(result), analiz: () => renderAnalysis(result), ayar: renderSettings, veri: renderData, paylasim: renderShare };
+      const known = new Set(Object.keys(state.allCache || {}));
+      const nCmp = loadCmp().filter((id) => known.has(id)).length;
+      const tabs = [['sira', 'Sıralama'], ['kars', `Karşılaştır${nCmp ? ` (${nCmp})` : ''}`], ['analiz', 'Piyasa analizi'], ['ayar', 'Ayarlar'], ['veri', 'Veri'], ['paylasim', 'Paylaşım']];
+      const views = { sira: () => renderRanking(result), kars: () => renderCompare(result), analiz: () => renderAnalysis(result), ayar: renderSettings, veri: renderData, paylasim: renderShare };
       const body = (views[state.tab] || views.sira)();
       const sl = syncLabel();
       panel = `<div class="panel"><div class="head"><h1>Araç Asistanı</h1>${tabs
@@ -1903,9 +2388,20 @@
         .join('')}<span class="spacer"></span>${sl ? `<button class="tab sync" data-action="sync-now" data-sync title="Şimdi eşitle">${esc(sl)}</button>` : ''}<button data-action="toggle">Kapat</button></div><div class="body">${body}</div></div>`;
     }
     const scroll = root.querySelector('.body')?.scrollTop || 0;
-    root.innerHTML = `<style>${CSS}</style><div class="wrap">${panel}${fab}</div>`;
+    // Not yazarken eşitleme ya da AI analizi paneli yeniden çizerse odak ve imleç yerinde kalsın
+    const a = root.activeElement;
+    const focus = a && a.matches && a.matches('textarea[data-note]') ? { id: a.dataset.note, s: a.selectionStart, e: a.selectionEnd, inCard: !!a.closest('.card') } : null;
+    root.innerHTML = `<style>${CSS}</style><div class="wrap">${panel}${card}${fab}</div>`;
+    queueDecorate(); // durum, karar ya da ayar değiştiyse arama listesindeki rozetler de değişsin
     const b = root.querySelector('.body');
     if (b) b.scrollTop = scroll;
+    if (focus) {
+      const ta = [...root.querySelectorAll('textarea[data-note]')].find((x) => x.dataset.note === focus.id && !!x.closest('.card') === focus.inCard);
+      if (ta) {
+        ta.focus({ preventScroll: true });
+        ta.setSelectionRange(focus.s, focus.e);
+      }
+    }
   }
 
   function toast(msg, ms = 3500) {
@@ -1944,6 +2440,9 @@
     for (const cr of s.criteria) {
       if (!cr.id || !cr.name || typeof cr.points !== 'number') throw new Error('Her kriterde id, name ve points olmalı.');
       if (ids.has(cr.id)) throw new Error(`Kriter id'si tekrar ediyor: ${cr.id}`);
+      if (cr.views !== undefined && (!Array.isArray(cr.views) || cr.views.some((v) => !VIEWS.includes(v)))) {
+        throw new Error(`${cr.id}.views şu türlerden oluşmalı: ${VIEWS.join(', ')}`);
+      }
       ids.add(cr.id);
     }
     for (const cr of s.criteria) for (const id of cr.allOf || []) if (!ids.has(id)) throw new Error(`${cr.id}.allOf içinde bilinmeyen kriter: ${id}`);
@@ -1973,6 +2472,41 @@
     if (e.target.closest('summary[data-rej-toggle]')) {
       state.rejOpen = !state.rejOpen;
       return;
+    }
+    if (e.target.closest('summary[data-closed-toggle]')) {
+      state.closedOpen = !state.closedOpen;
+      return;
+    }
+
+    // Durum ve not
+    const stBtn = e.target.closest('[data-track-status]');
+    if (stBtn) return setTrack(stBtn.dataset.id, 'status', stBtn.dataset.trackStatus || null);
+    const noteBtn = e.target.closest('[data-note-save]');
+    if (noteBtn) {
+      const ta = noteBtn.closest('.track').querySelector('textarea[data-note]');
+      return setTrack(noteBtn.dataset.noteSave, 'note', ta ? ta.value.trim() : '');
+    }
+
+    // Karşılaştırma seçimi
+    const cmpBox = e.target.closest('input[data-cmp]');
+    if (cmpBox) {
+      const id = cmpBox.dataset.cmp;
+      const known = loadAllListings();
+      const ids = loadCmp().filter((x) => x !== id && known[x]);
+      if (cmpBox.checked) {
+        if (ids.length >= MAX_CMP) {
+          cmpBox.checked = false;
+          return toast(`En fazla ${MAX_CMP} ilan karşılaştırılabilir. Önce birini çıkar.`);
+        }
+        ids.push(id);
+      }
+      saveCmp(ids);
+      return render();
+    }
+    const cmpRemove = e.target.closest('[data-cmp-remove]');
+    if (cmpRemove) {
+      saveCmp(loadCmp().filter((x) => x !== cmpRemove.dataset.cmpRemove));
+      return render();
     }
     const sum = e.target.closest('summary[data-row]');
     if (sum) {
@@ -2011,6 +2545,22 @@
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
+    if (action === 'card') {
+      state.cardOpen = !state.cardOpen;
+      return render();
+    }
+    if (action === 'cmp-clear') {
+      saveCmp([]);
+      return render();
+    }
+    if (action === 'cmp-claude') {
+      const cfg = loadConfig();
+      const all = computeRows(loadAllListings(), cfg).all;
+      const rows = loadCmp().map((id) => all.find((r) => String(r.l.id) === id)).filter(Boolean);
+      const text = comparePrompt(rows, cfg);
+      GM_setClipboard(text, 'text');
+      return setStatus(`Kopyalandı (~${Math.round(text.length / 3.5 / 1000)}k token). claude.ai'da yeni bir sohbete yapıştır.`);
+    }
     if (action === 'toggle') {
       state.open = !state.open;
       if (state.open && Date.now() - (loadSyncMeta().at || 0) > 2 * 60000) scheduleSync(300);
@@ -2066,10 +2616,11 @@
       return render();
     }
     if (action === 'enqueue') {
-      const saved = loadAllListings(); // sen ya da dahil ettiğin biri zaten gezdiyse tekrar kuyruğa alma
-      const savedUrls = new Set(Object.values(saved).map((l) => l.url));
+      const saved = new Set(Object.keys(loadAllListings())); // sen ya da dahil ettiğin biri zaten gezdiyse tekrar kuyruğa alma
       const q = loadQueue();
-      const add = collectSearchLinks().filter((u) => !savedUrls.has(u) && !q.includes(u));
+      const key = (u) => idFromUrl(u) || u;
+      const queued = new Set(q.map(key));
+      const add = collectSearchLinks().filter((u) => !saved.has(key(u)) && !queued.has(key(u)));
       saveQueue([...q, ...add]);
       render();
       return toast(`${add.length} yeni ilan kuyruğa eklendi. İlk ilanı açıp "Sonraki ilan" ile ilerleyebilirsin.`);
@@ -2165,6 +2716,7 @@
         : 'Kayıtlı tüm ilanlar ve AI sonuçları silinsin mi? Bu geri alınamaz.';
       if (!confirm(msg)) return;
       clearListings();
+      saveCmp([]);
       return render();
     }
   }
@@ -2180,6 +2732,7 @@
     if (isDetailPage()) {
       const l = saveCurrentListing();
       if (l) {
+        state.currentId = l.id;
         const cfg = loadConfig();
         const view = loadAllListings()[l.id] || l; // dahil ettiğin kişilerin kararları da sayılsın
         const hard = evalHard(view, cfg);
@@ -2191,8 +2744,14 @@
       } else {
         toast('İlan bilgileri okunamadı. Sayfa yapısı beklenenden farklı olabilir.');
       }
-    } else if (Date.now() - (loadSyncMeta().at || 0) > 10 * 60000) {
-      scheduleSync(5000);
+    } else {
+      try {
+        decorateSearch();
+      } catch (e) {
+        // rozetler olmasa da asistan ve eşitleme çalışmaya devam etsin
+      }
+      watchSearch();
+      if (Date.now() - (loadSyncMeta().at || 0) > 10 * 60000) scheduleSync(5000);
     }
   }
 

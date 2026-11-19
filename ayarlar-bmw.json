@@ -80,7 +80,10 @@
           "mugello red",
           "coral red"
         ],
-        "vision": "Are the car seats red (red leather or red upholstery)?"
+        "vision": "Are the car seats red (red leather or red upholstery)?",
+        "views": [
+          "interior"
+        ]
       },
       {
         "id": "shadow",
@@ -107,7 +110,13 @@
           "y spoke",
           "y kollu"
         ],
-        "vision": "Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?"
+        "vision": "Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?",
+        "views": [
+          "wheel",
+          "exterior_side",
+          "exterior_front",
+          "exterior_rear"
+        ]
       },
       {
         "id": "izgara",
@@ -120,7 +129,10 @@
           "parlak siyah ızgara",
           "shadow line"
         ],
-        "vision": "Is the BMW kidney grille frame black (not chrome)?"
+        "vision": "Is the BMW kidney grille frame black (not chrome)?",
+        "views": [
+          "exterior_front"
+        ]
       }
     ]
   }
