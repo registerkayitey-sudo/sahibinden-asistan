@@ -67,6 +67,8 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 - Kullanıcı adı `kişi-bilgisayar` biçiminde (`efe-mac`, `efe-windows`). Tireden önceki kısım kişidir; aynı kişinin bilgisayarları tek klasörü ve tek ayarı paylaşır.
 - Script her eşitlemede veri reposunun özel olduğunu kontrol eder; herkese açıksa hiçbir şey göndermez.
 - Ayarların `ollama` bölümü bilgisayara özeldir, eşitlemeyle değişmez. Gelen ayar `validateConfig`'ten geçmezse alınmaz.
+- Paylaşımı kaydederken bu tarayıcıda yeni bir kişi adı seçildiyse ve veri reposunda o kişinin ilanları ya da ayarları varsa onay istenir (`personUsage`): arkadaş yanlışlıkla "efe…" adını seçip kullanıcının ayarlarının ve elle sıralamasının üstüne yazmasın.
+- "Sadece oku" (`share.readOnly`): eşitleme okur ama hiçbir şey göndermez (ilan, ayar, eski klasör temizliği yok). Salt okunur token'la (Contents: Read-only) arkadaşa verilir; değiştirme GitHub izniyle engellenir.
 - Token sadece tarayıcıda (`GM` anahtarı `ghToken`) durur. Repoya, ayar dosyasına, veri yedeğine ya da Claude metnine asla girmemeli.
 
 ## Git

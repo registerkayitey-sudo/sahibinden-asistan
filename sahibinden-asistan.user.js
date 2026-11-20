@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.10.1
+// @version      0.11.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -1757,7 +1757,9 @@
   // Script sadece kendi klasörüne yazar, başkalarınınkini sadece okur. Aynı kullanıcı adını giren
   // bilgisayarlar aynı klasörü paylaşır; aynı ilanın iki kopyası mergeSame ile birleştirilir.
   // Token yalnızca bu tarayıcıda (ghToken) durur; ayar dosyasına ve veri dışa aktarımına girmez.
-  const DEFAULT_SHARE = { repo: 'registerkayitey-sudo/sahibinden-asistan-veri', branch: 'main', user: '', include: [], auto: true };
+  // readOnly: veri reposundan sadece oku, hiçbir şey gönderme. Salt okunur token'la (Contents: Read-only) birlikte
+  // kullanılır: arkadaş başkalarının ilanlarını, Var/Yok kararlarını ve notlarını çeker, GitHub değiştirmesine izin vermez.
+  const DEFAULT_SHARE = { repo: 'registerkayitey-sudo/sahibinden-asistan-veri', branch: 'main', user: '', include: [], auto: true, readOnly: false };
   const SYNC_DIR = 'ilanlar';
   // Kullanıcı adı "kişi" ya da "kişi-bilgisayar" (efe, efe-windows, efe-mac). Tireden önceki kısım kişidir:
   // aynı kişinin bütün bilgisayarları aynı klasörü ve aynı ayarları paylaşır, birbirinin üstüne yazabilir.
@@ -1801,13 +1803,28 @@
     const e = new Error(
       r.status === 401 ? 'GitHub token geçersiz ya da süresi dolmuş. Paylaşım sekmesinden yenisini gir.'
         : r.status === 403 && /rate limit/i.test(msg) ? 'GitHub istek sınırı doldu, bir saat içinde kendiliğinden açılır.'
-        : r.status === 403 ? 'Token bu repoya yazamıyor. Token ayarında "Contents: Read and write" izni olmalı.'
+        : r.status === 403 ? 'Token bu repoya yazamıyor. Token ayarında "Contents: Read and write" izni olmalı; sana salt okunur bir token verildiyse Paylaşım sekmesinde "Sadece oku"yu işaretle.'
         : r.status === 404 ? 'Veri reposu bulunamadı ya da token bu repoya erişemiyor.'
         : r.status === 409 ? 'Veri reposu boş. GitHub\'da içinde en az bir dosya (README) olmalı.'
         : `GitHub hatası ${r.status}: ${msg.slice(0, 150)}`
     );
     e.status = r.status;
     throw e;
+  }
+
+  // Bu kişi adına veri reposunda zaten veri var mı? Yeni bir tarayıcıda başka birinin adı seçilmesin diye.
+  async function personUsage(repo, branch, person) {
+    const head = (await gh('GET', `/repos/${repo}/git/ref/heads/${branch}`, null, true)).object.sha;
+    const commit = await gh('GET', `/repos/${repo}/git/commits/${head}`);
+    const tree = await gh('GET', `/repos/${repo}/git/trees/${commit.tree.sha}?recursive=1`);
+    let listings = 0, settings = false;
+    for (const e of tree.tree || []) {
+      if (e.type !== 'blob') continue;
+      const m = e.path.match(/^ilanlar\/([a-z0-9][a-z0-9-]*)\/[^/]+\.json$/);
+      if (m && personOf(m[1]) === person) listings++;
+      if (e.path === `ayarlar/${person}.json`) settings = true;
+    }
+    return { listings, settings };
   }
 
   async function fetchBlobJSON(repo, sha) {
@@ -1854,7 +1871,7 @@
     if (m.error) return '☁ ⚠ eşitlenemedi';
     if (!m.at) return '☁ henüz eşitlenmedi';
     const min = Math.round((Date.now() - m.at) / 60000);
-    return '☁ ' + (min < 1 ? 'az önce' : min < 60 ? `${min} dk önce` : new Date(m.at).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })) + ' eşitlendi';
+    return '☁ ' + (min < 1 ? 'az önce' : min < 60 ? `${min} dk önce` : new Date(m.at).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })) + ' eşitlendi' + (loadShare().readOnly ? ' (sadece okuma)' : '');
   }
 
   function showSync(text) {
@@ -2010,6 +2027,7 @@
           }
         }
         saveSyncMeta(meta);
+        if (s.readOnly) break; // sadece oku: hiçbir şey gönderme (ilan, ayar, eski klasör temizliği)
         if (!entries.length) break;
 
         // 5) Hepsi tek commit. Bu arada başka bir bilgisayar gönderdiyse (422) baştan al ve tekrar dene.
@@ -2973,6 +2991,7 @@
         <span class="muted hint">${s.user ? `Kişi: <b>${esc(me)}</b>${dev ? ` · bu bilgisayar: <b>${esc(dev)}</b>` : ''}. ` : ''}Biçim: kişi-bilgisayar (efe-windows, efe-mac). Küçük harf ve rakam; arkadaşların kendi adlarıyla başlasın.</span>
         <label>GitHub token <input data-share="token" type="password" placeholder="${hasToken ? 'Kayıtlı. Değiştirmek için yenisini yapıştır.' : 'github_pat_…'}" autocomplete="off" spellcheck="false"></label>
         <label class="check"><input type="checkbox" data-share="auto" ${s.auto ? 'checked' : ''}> Otomatik eşitle (ilan kaydedince, karar verince, AI analizi bitince)</label>
+        <label class="check"><input type="checkbox" data-share="readOnly" ${s.readOnly ? 'checked' : ''}> Sadece oku: veri reposuna hiçbir şey gönderme. Sana salt okunur bir token verildiyse işaretle; başkalarının ilanlarını, kararlarını ve notlarını çekersin, seninkiler bu tarayıcıda kalır.</label>
       </div>
       <h2>Kimlerin verisini dahil edeyim?</h2>
       <div data-includes>${includeList(null)}</div>
@@ -3313,12 +3332,30 @@
       const include = [...(prev.include || []).filter((u) => !shown.has(u)), ...boxes.filter((x) => x.checked).map((x) => x.dataset.include)];
       const token = field('token').value.trim();
       if (token) GM_setValue('ghToken', token);
+      // Bu tarayıcıda yeni bir kişi adı: o ada ait veri varsa önce sor. Aynı kişi adı = aynı veri (ilanlar, ayarlar,
+      // elle sıralama); başka birinin adını seçmek onun verisinin üstüne yazar.
+      const person = personOf(user);
+      if (getToken() && personOf(prev.user) !== person) {
+        let used = null;
+        try {
+          used = await personUsage(repo, prev.branch || 'main', person);
+        } catch (e) {
+          // erişim hatasını aşağıdaki eşitleme gösterir
+        }
+        if (used && (used.listings || used.settings)) {
+          const what = [used.listings ? `${used.listings} ilan` : '', used.settings ? 'ayarlar ve elle sıralama' : ''].filter(Boolean).join(', ');
+          const ok = confirm(`Veri reposunda "${person}" adına zaten ${what} var.\n\n`
+            + 'Bu SENİN başka bilgisayarınsa Tamam\'a bas: ikisi aynı veriyi paylaşır.\n'
+            + `Başka birininse İptal'e bas ve kendi adınla başlayan farklı bir kullanıcı adı seç (ör. "ali" ya da "ali-laptop"). Aynı adı kullanmak onun ilanlarının, ayarlarının ve sıralamasının üstüne yazar.`);
+          if (!ok) return setStatus(`Kaydedilmedi: "${person}" adı başkasına ait olabilir, kendi adınla başlayan bir kullanıcı adı seç.`);
+        }
+      }
       if (personOf(prev.user) !== personOf(user) || prev.repo !== repo) {
         // Başka klasör ya da repo: eşitleme kayıtları baştan, başkalarından gelen önbellek silinir
         for (const k of otherKeys()) GM_deleteValue(k);
         saveSyncMeta({});
       }
-      saveShare({ ...prev, user, repo, include, auto: field('auto').checked });
+      saveShare({ ...prev, user, repo, include, auto: field('auto').checked, readOnly: field('readOnly').checked });
       if (!getToken()) {
         state.status = 'Kaydedildi. Eşitleme için token gerekli.';
         return render();

@@ -137,7 +137,20 @@ GitHub paylaşımı açıksa ayarlar kendi bilgisayarların arasında eşitlenir
 
 **Arkadaşlar için**
 
-Arkadaşın script'i yukarıdaki linkten kurar. Paylaşım sekmesine kendi adıyla başlayan bir kullanıcı adı (ör. `ali` ya da `ali-laptop`) ve senin verdiğin token'ı girer. GitHub hesabı olması gerekmez. Ayarları seninkilerle karışmaz, herkesinki ayrı.
+Arkadaşın script'i yukarıdaki linkten kurar. İki yol var:
+
+- **Sadece okusun (önerilen):** Senin ilanlarını, Var/Yok kararlarını ve notlarını çekebilir ama hiçbirini değiştiremez; bunu GitHub'ın kendisi engeller, script'te hata olsa bile.
+  1. GitHub'da [yeni bir fine-grained token](https://github.com/settings/personal-access-tokens/new) oluştur: **Token name** `sahibinden-asistan-okuma`, **Repository access** *Only select repositories* → `sahibinden-asistan-veri`, **Permissions → Contents: Read-only**. Bu token'ı arkadaşına ver (yazma token'ını değil).
+  2. Arkadaşın **Paylaşım** sekmesine kendi adıyla başlayan bir kullanıcı adı (ör. `ali`) ve bu token'ı girer, **Sadece oku**'yu işaretler, **Kaydet ve eşitle**'ye basar. Sonra **Kimlerin verisini dahil edeyim?** altında seni (`efe`) işaretler.
+  3. Senin ilanların onda "kaynak: efe", kararların "efe kontrol etti", durumun ve notun "efe" etiketiyle görünür. Senin bir ilanında Var/Yok ya da not değiştirirse ilan onun tarayıcısında kendi kopyası olur; sana hiçbir şey gitmez. Onun kendi ilanları ve kararları da sadece kendi tarayıcısında kalır, sen göremezsin.
+- **İkiniz de yazsın:** Yazma token'ını paylaşırsın; o kendi klasörüne (`ilanlar/ali/`) yazar, sen de onu dahil edip ilanlarını görebilirsin. GitHub hesabı olması gerekmez. Bedeli aşağıda.
+
+Arkadaşının kurulumu senin verine dokunmaz:
+
+- **Senin tarayıcındaki veriler** (ilanlar, Var/Yok kararları, notlar, ayarlar, Benim sıralamam) onun bilgisayarına hiç gitmez; onun kurulumu kendi tarayıcısında sıfırdan başlar (senin varsayılan BMW ayarlarınla, değiştirebilir).
+- **Veri reposunda** herkes sadece kendi adının klasörüne yazar: o `ilanlar/ali/` ve `ayarlar/ali.json`, sen `ilanlar/efe/` ve `ayarlar/efe.json`. Elle sıralaman ayarlarının içinde, yani senin dosyanda.
+- **Tek risk aynı kişi adı:** kullanıcı adının tireden önceki kısmı aynı olan herkes aynı kişi sayılır (efe-mac, efe-windows). Arkadaşın yanlışlıkla "efe" ile başlayan bir ad girerse senin ayarlarının ve sıralamanın üstüne yazabilirdi. Script bunu engeller: bir tarayıcıda yeni bir kişi adıyla eşitleme kurulurken o adın veri reposunda verisi varsa uyarır ve onay ister ("Bu SENİN başka bilgisayarınsa Tamam, başka birininse İptal").
+- **Onu dahil etmezsen** onun hiçbir verisi sende görünmez. Dahil edersen ilanları "kaynak: ali" diye, senin henüz karar vermediğin Var/Yok'ları "ali kontrol etti" diye görünür; durumu ve notu bilgi olarak gösterilir. Senin ayarlarına, sıralamana ve kararlarına dokunmaz.
 
 Token'ı paylaşmanın bedeli şu: token'ı olan herkes veri reposunun tamamını okuyabilir ve teknik olarak her klasöre yazabilir. Script başkasının klasörüne yazmaz, git geçmişi de her sürümü sakladığı için bir şey bozulursa geri alınabilir. Birini çıkarmak istersen eski token'ı GitHub'dan sil, yenisini oluşturup sadece kalanlara ver.
 
