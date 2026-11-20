@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.11.0
+// @version      0.12.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -250,10 +250,13 @@
     return !t.by && !!(statusInfo(t.status) || {}).closed;
   };
 
+  // Elle eleme (manual.reject): sadece senin kararın sayılır; dahil ettiğin birinin elemesi seninkini etkilemez
+  const isRejectedByMe = (l) => manualOf(l).reject === true && !manualBy(l, 'reject');
+
   function evalHard(l, cfg) {
     const h = cfg.hardFilters;
     const man = manualOf(l);
-    const fails = [];
+    const fails = isRejectedByMe(l) ? ['Elle elendi'] : [];
     const unknowns = [];
     const decided = [];
     // İlandan doğrulanamayan bir şart: kullanıcı karar verdiyse onu uygula, vermediyse sor.
@@ -657,6 +660,8 @@
   function ruleFlags(l, cfg, hard) {
     const t = fold((l.title || '') + ' . ' + (l.description || ''));
     const flags = FLAG_RULES.filter(([re]) => re.test(t)).map(([, msg]) => msg);
+    const rejBy = manualBy(l, 'reject');
+    if (rejBy && manualOf(l).reject === true) flags.push(`${rejBy} bu ilanı eledi`);
     for (const [label, value] of Object.entries(l.info || {})) {
       if (fold(label).includes('agir hasar') && fold(value).startsWith('evet')) flags.push('AĞIR HASAR KAYITLI');
     }
@@ -2301,6 +2306,14 @@
     return out.length ? ' ' + out.join(' ') : '';
   }
 
+  // Elle eleme düğmesi: nedeni nota yazılabilir; elenen ilan sıralamadan "Elenen" listesine düşer
+  function rejectBtn(l, short = false) {
+    const id = esc(l.id);
+    return isRejectedByMe(l)
+      ? `<button class="mini" data-manual="${id}" data-key="reject" data-val="" title="Elemeyi geri al, ilan sıralamaya dönsün">↩ ${short ? 'geri al' : 'elemeyi geri al'}</button>`
+      : `<button class="mini" data-manual="${id}" data-key="reject" data-val="1" title="Bu ilanı elle ele; nedenini nota yazabilirsin">✗ ${short ? 'ele' : 'İlanı ele'}</button>`;
+  }
+
   // Durum düğmeleri ve not alanı. Başkasından gelen durum/not sadece gösterilir; düğmeler senin kararın.
   function trackBlock(l) {
     const t = trackOf(l);
@@ -2312,7 +2325,7 @@
     const draft = state.noteDrafts[l.id];
     return `<div class="track"><span class="mbtns">${chips}</span>${other}
       <textarea class="note" data-note="${id}" placeholder="Not: satıcıyla konuştukların, ekspertiz sonucu, pazarlık…">${esc(draft != null ? draft : own.note)}</textarea>
-      <button class="mini" data-note-save="${id}">Notu kaydet</button>${draft != null && draft !== own.note ? ' <span class="warn" style="font-size:12px">kaydedilmedi</span>' : ''}</div>`;
+      <button class="mini" data-note-save="${id}">Notu kaydet</button> ${rejectBtn(l)}${draft != null && draft !== own.note ? ' <span class="warn" style="font-size:12px">kaydedilmedi</span>' : ''}</div>`;
   }
 
   // Örnek fotoğrafı ayarlara yaz (null: kaldır). Ayarlar diğer bilgisayarlarına da gider; o kriter
@@ -2676,7 +2689,8 @@
     }
     if (result.rejected.length) {
       html += `<details ${state.rejOpen ? 'open' : ''}><summary data-rej-toggle>Elenen ${result.rejected.length} ilan</summary><ul>${result.rejected
-        .map((r) => `<li><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)} <span class="bad">${esc(r.hard.fails.join(', '))}</span>${r.hard.decided
+        .map((r) => `<li><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)} <span class="bad">${esc(r.hard.fails.join(', '))}</span>${
+          isRejectedByMe(r.l) ? `${trackOf(r.l).note && !trackOf(r.l).by ? ` <span class="muted">${esc(trackOf(r.l).note.slice(0, 120))}</span>` : ''} ${rejectBtn(r.l, true)}` : ''}${r.hard.decided
           .filter((d) => !d.ok)
           .map((d) => manualBtns(r.l.id, d.key, d.yes, d.no, false, !d.by))
           .join('')}</li>`)
@@ -2751,7 +2765,7 @@
             const sp = sugPos ? sugPos.get(id) : null;
             return `<li draggable="true" data-rank-id="${esc(id)}"><span class="grip" title="Sürükle">⠿</span><span class="pos">${i + 1}</span>
               <span class="t"><a href="${esc(safeUrl(l.url))}" target="_blank">${esc(l.title)}</a>${statusChip(l)}<div class="meta">${fmtTL(l.price)} · ${fmtNum(l.km)} km · ${esc(l.year ?? '–')} · ${where}${sp ? ` · öneriyle ${sp}. sırada${sp !== i + 1 ? (sp < i + 1 ? ' ↑' : ' ↓') : ' ✓'}` : ''}</div></span>
-              <span class="mbtns"><button class="mini" data-rank-move="up" data-id="${esc(id)}" ${i ? '' : 'disabled'}>↑</button><button class="mini" data-rank-move="down" data-id="${esc(id)}" ${i < order.length - 1 ? '' : 'disabled'}>↓</button><button class="mini" data-rank-remove="${esc(id)}" title="Sıralamadan çıkar">×</button></span></li>`;
+              <span class="mbtns"><button class="mini" data-rank-move="up" data-id="${esc(id)}" ${i ? '' : 'disabled'}>↑</button><button class="mini" data-rank-move="down" data-id="${esc(id)}" ${i < order.length - 1 ? '' : 'disabled'}>↓</button><button class="mini" data-rank-remove="${esc(id)}" title="Sıralamadan çıkar">×</button>${rejectBtn(l, true)}</span></li>`;
           })
           .join('')}</ol>`
       : '<p class="muted">Henüz ilan sıralamadın. Aşağıdan ekle.</p>';
@@ -3013,7 +3027,7 @@
     if (!state.open && isDetailPage() && state.currentId) {
       const v = loadAllListings()[state.currentId];
       if (v) {
-        fab += `<button data-action="card">📝 ${trackOf(v).status && !trackOf(v).by ? esc(statusInfo(trackOf(v).status).label) : 'Not / durum'}</button>`;
+        fab += `<button data-action="card">📝 ${isRejectedByMe(v) ? 'Elendi' : trackOf(v).status && !trackOf(v).by ? esc(statusInfo(trackOf(v).status).label) : 'Not / durum'}</button>`;
         if (state.cardOpen) card = `<div class="card"><h3>${esc(v.title)}</h3>${trackBlock(v)}</div>`;
       }
     }
@@ -3064,6 +3078,9 @@
     const t = document.createElement('div');
     t.className = 'toast';
     t.textContent = msg;
+    // İlan sayfasındaki kart açıksa bildirim kartın üstünde dursun, düğmeleri kapatmasın
+    const card = root.querySelector('.card');
+    if (card) t.style.bottom = `${Math.round(card.getBoundingClientRect().height) + 72}px`;
     wrap.appendChild(t);
     setTimeout(() => t.remove(), ms);
   }
@@ -3264,6 +3281,7 @@
       scheduleSync();
       render();
       const note = copied ? ` · ilanın kopyası senin verine eklendi (kaynak: ${l.copiedFrom})` : '';
+      if (key === 'reject') return toast((raw === '' ? 'Eleme geri alındı, ilan sıralamaya döndü.' : 'İlan elendi; "Elenen" listesinde duruyor, oradan geri alabilirsin.') + note);
       if (raw === '') return toast('Kontrol geri alındı.' + note);
       const hard = evalHard(loadAllListings()[id] || l, loadConfig());
       const where = hard.status === 'gecti' ? '✓ artık filtreleri geçiyor' : hard.status === 'belirsiz' ? '? başka doğrulanamayan şart var' : '✗ elendi';

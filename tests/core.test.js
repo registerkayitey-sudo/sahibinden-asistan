@@ -287,6 +287,18 @@ eq('önemli: ucuz olan daha çok fiyat puanı alır', A.scoreListing(YL.y6, yImp
 const two = A.calibrate(YL, yorder, cfg, { important: ['year', 'km'] });
 eq('önemli: iki bileşen ikisi de alt sınırda', [two.suggested.scoring.year.points >= two.floor, two.suggested.scoring.km.points >= two.floor], [true, true]);
 
+// Elle eleme: sadece senin kararın sayılır
+const rej = { ...base, manual: { reject: { v: true, at: 5 } } };
+eq('elle eleme: elenir', [A.evalHard(rej, cfg).status, A.evalHard(rej, cfg).fails[0]], ['elendi', 'Elle elendi']);
+eq('elle eleme: geri alınınca döner', A.evalHard({ ...base, manual: { reject: { v: null, at: 6 } } }, cfg).status, 'gecti');
+eq('elle eleme: geri alma eşitlemede eski kararı ezer', A.evalHard(A.mergeSame(rej, { ...base, lastSeen: 1, manual: { reject: { v: null, at: 9 } } }), cfg).status, 'gecti');
+eq('elle eleme: arama rozeti', A.listBadge(rej, cfg).text, '✗ Elle elendi');
+const aliRej = A.combineOther(null, rej, 'ali');
+eq('arkadaşın elemesi seninkini etkilemez', A.evalHard(aliRej, cfg).status, 'gecti');
+eq('arkadaşın elemesi uyarı olarak görünür', A.ruleFlags(aliRej, cfg, A.evalHard(aliRej, cfg)).includes('ali bu ilanı eledi'), true);
+eq('arkadaşın elemesi kopyaya geçmez', (A.ownCopyOf(aliRej).manual || {}).reject, undefined);
+eq('elle elenen Claude metnine girmez', A.claudePrompt(A.computeRows({ x: { ...rej, id: 'x' } }, cfg), cfg).includes('### '), false);
+
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));
 eq('ayarlar-bmw.json = DEFAULT_CONFIG', require('util').isDeepStrictEqual(fileCfg, A.DEFAULT_CONFIG), true);
