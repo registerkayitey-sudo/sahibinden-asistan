@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.12.1
+// @version      0.12.3
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -2178,6 +2178,9 @@
     .chip { display: inline-block; font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--bg2); border: 1px solid var(--line); white-space: nowrap; }
     .chip.st-arandi, .chip.st-ekspertiz, .chip.st-teklif { background: var(--accent); border-color: var(--accent); color: #fff; }
     .chip.st-vazgecti, .chip.st-satildi { text-decoration: line-through; }
+    .chip.mine { border-color: var(--accent); color: var(--accent); background: transparent; }
+    .chip.notmine { border-style: dashed; color: var(--muted); background: transparent; }
+    .mini.addrank { padding: 0 6px; margin-left: 3px; line-height: 1.3; }
     .track { margin: 2px 0 10px; }
     .track .mbtns { flex-wrap: wrap; margin: 0; }
     .mini.st.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -2456,15 +2459,24 @@
     return html + '</div>';
   }
 
+  // Benim sıralamam'daki yeri: sıralanmışsa "#3 sıralamamda", değilse "sıralamamda yok" + tek tıkla ekleme
+  function myRankTag(l, myPos) {
+    const pos = myPos.get(String(l.id));
+    return pos
+      ? ` <span class="chip mine" title="Benim sıralamam'da ${pos}. sırada">#${pos} sıralamamda</span>`
+      : ` <span class="chip notmine" title="Benim sıralamam listesine henüz eklemedin">sıralamamda yok</span><button class="mini addrank" data-rank-add="${esc(l.id)}" title="Benim sıralamam'ın sonuna ekle">＋</button>`;
+  }
+
   function table(rows, startIdx) {
     if (!rows.length) return '<p class="muted">Henüz ilan yok.</p>';
     const cmp = new Set(loadCmp());
+    const myPos = new Map(loadOrder().map((id, i) => [id, i + 1]));
     return `<table><thead><tr><th title="Karşılaştırmak için seç">#</th><th>İlan</th><th class="num">Fiyat</th><th class="num">Yıl</th><th class="num">KM</th><th class="num">Tramer</th><th class="num">Piyasa</th><th class="num">Puan</th></tr></thead><tbody>${rows
       .map((r, i) => {
         const tr = r.score.tramer.amount;
         return `<tr>
           <td class="num pick"><input type="checkbox" data-cmp="${esc(r.l.id)}" title="Karşılaştırmaya ekle" ${cmp.has(String(r.l.id)) ? 'checked' : ''}>${startIdx + i + 1}</td>
-          <td><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)}${r.flags.length ? ` <span class="warn" title="${esc(r.flags.join('\n'))}">⚠ ${r.flags.length}</span>` : ''}${
+          <td><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)}${myRankTag(r.l, myPos)}${r.flags.length ? ` <span class="warn" title="${esc(r.flags.join('\n'))}">⚠ ${r.flags.length}</span>` : ''}${
             r.l._owner ? ` <span class="muted" title="Bu ilan sende yok, dahil ettiğin kişiden geliyor. Bir şeyini değiştirirsen sende kopyası oluşur.">· kaynak: ${esc(r.l._owner)}</span>`
             : r.l.copiedFrom ? ` <span class="muted">· kopya (kaynak: ${esc(r.l.copiedFrom)})</span>` : ''}
             ${askBlock(r)}
@@ -2670,7 +2682,9 @@
 
   function rankingBody(result) {
     const fromOthers = result.all.filter((r) => r.l._owner).length;
-    let html = `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi${result.closed.length ? ` · ${result.closed.length} kapandı` : ''}</p>`;
+    const ranked = new Set(loadOrder());
+    const unranked = [...result.passed, ...result.unsure].filter((r) => !ranked.has(String(r.l.id))).length;
+    let html = `<p class="muted">${result.all.length} ilan${fromOthers ? ` (${fromOthers} tanesi dahil ettiğin kişilerden)` : ''} · ${result.passed.length} geçti · ${result.unsure.length} doğrulanamadı · ${result.rejected.length} elendi${result.closed.length ? ` · ${result.closed.length} kapandı` : ''}${unranked ? ` · geçen ve doğrulanamayanlardan ${unranked} tanesi Benim sıralamam'da yok` : ''}</p>`;
     // Filtre açıkken tek liste: filtreye uyanlar, puana göre
     const f = curFilter();
     if (filterActive(f)) {
@@ -2713,6 +2727,7 @@
 
   // ----- Benim sıralamam: elle sırala, o sıralamayı veren puanları bul, genel listeye uygula -----
   const MIN_CALIB = 8; // bundan az ilanla öneri gürültülü
+  const calibKey = (all, order, cfg) => stableStringify({ order, important: importantOf(cfg), scoring: cfg.scoring, listings: order.map((id) => all[id]) });
 
   // "Önemli" düğmeleri: KM, fiyat, model yılı ve kriterler (tramer ve renkler işaretlenemez)
   function impChips(cfg) {
@@ -2729,16 +2744,28 @@
     const byId = new Map(result.all.map((r) => [String(r.l.id), r]));
     const generalPos = new Map();
     result.passed.forEach((r, i) => generalPos.set(String(r.l.id), i + 1));
-    const cal = calibrate(all, order, cfg);
-    // Önemli işaretlemenin uyuma maliyeti: işaretsiz hesapla karşılaştır
-    const calFree = cal && importantOf(cfg).length ? calibrate(all, order, cfg, { important: [] }) : null;
+    // Puan önerisi ağır (ağırlık araması): her çizimde değil, sadece "Puanları hesapla" ile hesaplanır.
+    // Sıralama, ayarlar ya da sıralanan bir ilan değişince son hesap eskir; Uygula ancak güncel hesapla açılır.
+    const fresh = state.calib && state.calib.key === calibKey(all, order, cfg);
+    const cal = fresh ? state.calib.cal : null;
+    const calFree = fresh ? state.calib.calFree : null;
     const sugScore = cal ? new Map(order.map((id) => [id, scoreListing(all[id], cal.suggested).total])) : null;
     const sugPos = sugScore ? new Map([...order].sort((a, b) => sugScore.get(b) - sugScore.get(a)).map((id, i) => [id, i + 1])) : null;
     const pct = (x) => (x == null ? '–' : '%' + Math.round(x * 100));
+    // Şimdiki ayarlarla uyum ucuz (öğrenme yok): canlı gösterilir
+    const liveBefore = order.length >= 2 ? pairAgreement(order.map((id) => all[id]), (l) => scoreListing(l, cfg).total) : null;
 
     let html = `<p class="muted">Beğendiğin ilanları kendi önceliğine göre diz: en iyisi en üstte. Hepsini sıralaman gerekmez; ${MIN_CALIB}–15 ilan yeter.
-      Her değişiklikte asistan, bu sıralamayı en iyi veren puanları hesaplar. Uygun bulursan <b>Ayarları Genel Listeye Uygula</b> ile genel sıralamanın ayarı yaparsın.</p>`;
-    if (cal) {
+      Bitirince <b>Puanları hesapla</b>'ya bas: asistan bu sıralamayı en iyi veren puanları bulur. Uygun bulursan <b>Ayarları Genel Listeye Uygula</b> ile genel sıralamanın ayarı yaparsın.</p>`;
+    if (order.length >= 3 && !cal) {
+      const stale = !!state.calib;
+      html += `<div class="calib"><div>Sıraladığın ${order.length} ilanda şimdiki ayarlarla uyum: <span class="big">${pct(liveBefore)}</span></div>
+        ${stale ? '<div class="warn">Sıralaman, ayarların ya da sıraladığın bir ilan son hesaptan beri değişti; güncel öneri için tekrar hesapla.</div>' : ''}
+        ${order.length < MIN_CALIB ? `<div class="warn">Öneri için en az ${MIN_CALIB} ilan sıralamanı öneririm; az ilanla hesap rastlantısal farklara takılabilir.</div>` : ''}
+        <div class="imp"><span>Önemli bulduğun bileşenler:</span>${impChips(cfg)}</div>
+        <div class="bar" style="margin:8px 0 0"><button class="primary" data-action="rank-calc">Puanları hesapla</button>
+        <button data-action="rank-clear">Sıralamayı temizle</button><span class="muted" data-status>${esc(state.status)}</span></div></div>`;
+    } else if (cal) {
       const better = cal.after > cal.before + 1e-9;
       html += `<div class="calib"><div>Sıraladığın ${cal.n} ilanın ${cal.pairs} ikilisinde puanların seninle aynı sırayı verme oranı:</div>
         <div><span class="big">${pct(cal.before)}</span> şimdiki ayarlarla → <span class="big ${better ? 'good' : ''}">${pct(cal.after)}</span> önerilen ayarlarla</div>
@@ -2748,6 +2775,7 @@
         ${calFree && calFree.after > cal.after + 1e-9 ? `<div class="muted">Önemli işaretlemeseydin uyum ${pct(calFree.after)} olurdu; aradaki fark, önemli dediğin bileşenlere ayrılan pay yüzünden sıralamanla ters düşen ikililer.</div>` : ''}
         ${cal.important.filter((x) => !x.learned).map((x) => `<div class="warn">${esc(x.label)} sıraladığın ilanlarda hep aynı, öğrenilemedi. Sıralamana farklı ${x.key === 'year' ? 'model yıllarından' : 'değerlerde'} ilan ekle.</div>`).join('')}
         <div class="bar" style="margin:8px 0 0"><button class="primary" data-action="rank-apply" ${better ? '' : 'disabled'}>Ayarları Genel Listeye Uygula</button>
+        <button data-action="rank-calc" title="Bu sıralamayla zaten güncel">Tekrar hesapla</button>
         <button data-action="rank-clear">Sıralamayı temizle</button><span class="muted" data-status>${esc(state.status)}</span></div></div>`;
       const changed = cal.changes.filter((c) => c.from !== c.to);
       html += `<details ${state.calibOpen ? 'open' : ''}><summary data-calib-toggle>Önerilen puanlar (${changed.length} değişiklik)</summary>
@@ -3207,8 +3235,11 @@
     }
     const rankAdd = e.target.closest('[data-rank-add]');
     if (rankAdd) {
-      saveOrder([...loadOrder().filter((x) => x !== rankAdd.dataset.rankAdd), rankAdd.dataset.rankAdd]);
-      return render();
+      const ids = [...loadOrder().filter((x) => x !== rankAdd.dataset.rankAdd), rankAdd.dataset.rankAdd];
+      saveOrder(ids);
+      render();
+      if (state.tab !== 'benim') toast(`Benim sıralamam'a ${ids.length}. sıraya eklendi; yerini Benim sıralamam sekmesinde değiştirebilirsin.`);
+      return;
     }
     const rankMove = e.target.closest('[data-rank-move]');
     if (rankMove) {
@@ -3297,13 +3328,34 @@
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
-    if (action === 'rank-apply') {
+    if (action === 'rank-calc') {
+      const all = loadAllListings();
       const cfg = loadConfig();
-      const cal = calibrate(loadAllListings(), loadOrder(), cfg);
+      const order = loadOrder().filter((id) => all[id]);
+      setStatus('Hesaplanıyor…');
+      btn.disabled = true;
+      // Tarayıcı "Hesaplanıyor…" yazısını çizebilsin diye hesap bir sonraki karede
+      setTimeout(() => {
+        const cal = calibrate(all, order, cfg);
+        // Önemli işaretlemenin uyuma maliyeti: işaretsiz hesapla karşılaştır
+        const calFree = cal && importantOf(cfg).length ? calibrate(all, order, cfg, { important: [] }) : null;
+        state.calib = { key: calibKey(all, order, cfg), cal, calFree, at: Date.now() };
+        state.status = '';
+        render();
+      }, 30);
+      return;
+    }
+    if (action === 'rank-apply') {
+      const all = loadAllListings();
+      const cfg = loadConfig();
+      const order = loadOrder().filter((id) => all[id]);
+      if (!state.calib || state.calib.key !== calibKey(all, order, cfg)) return toast('Sıralaman son hesaptan beri değişti; önce Puanları hesapla.');
+      const cal = state.calib.cal;
       if (!cal || !(cal.after > cal.before)) return;
       if (!confirm(`Önerilen puanlar genel sıralamanın ayarı olsun mu? Uyum ${Math.round(cal.before * 100)}% → ${Math.round(cal.after * 100)}%. Şimdiki ayarlar yedeğe alınır (Ayarlar → Önceki ayarları geri yükle).`)) return;
       GM_setValue('configBackup', { config: cfg, at: Date.now(), from: '' });
       saveConfig(validateConfig(cal.suggested));
+      state.calib = null; // uygulandı: öneri artık şimdiki ayar, "eski hesap" uyarısı çıkmasın
       state.status = 'Puanlar uygulandı; genel sıralama artık senin sıralamandan öğrenilen ayarlarla.';
       return render();
     }

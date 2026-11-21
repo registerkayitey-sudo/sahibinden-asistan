@@ -62,8 +62,8 @@ Fiyatı değişen ilanları tekrar açarsan asistan eski ve yeni fiyatı uyarı 
 
 Puanları tek tek ayarlamak yerine ilanları kendi önceliğine göre sırala, asistan o sıralamayı veren puanları bulsun:
 
-1. **Benim sıralamam** sekmesinde **＋ ekle** ile ilanları listene al, sürükleyerek ya da ↑↓ ile diz: en iyisi en üstte. Hepsini sıralaman gerekmez; 8–15 ilan yeter.
-2. Her değişiklikte asistan, sıraladığın ilanları ikişer ikişer karşılaştırır ve puanların seninle aynı sırayı verme oranını gösterir: "şimdiki ayarlarla %64 → önerilen ayarlarla %91" gibi. **Önerilen puanlar** tablosunda hangi bileşenin kaç puan olması gerektiği yazar (KM, tramer, kriterler, km sınırları; yeni olarak **fiyat**, **model yılı** ve **renk**).
+1. **Benim sıralamam** sekmesinde **＋ ekle** ile ilanları listene al (Sıralama sekmesinde de, listene eklemediğin her ilanın yanında "sıralamamda yok" ve tek tıkla ekleyen **＋** var; eklediklerinde "#3 sıralamamda" gibi yeri yazar), sürükleyerek ya da ↑↓ ile diz: en iyisi en üstte. Hepsini sıralaman gerekmez; 8–15 ilan yeter.
+2. Sıraladıkça şimdiki ayarlarla uyum oranı canlı görünür. Bitirince **Puanları hesapla**'ya bas: asistan sıraladığın ilanları ikişer ikişer karşılaştırır ve puanların seninle aynı sırayı verme oranını gösterir: "şimdiki ayarlarla %64 → önerilen ayarlarla %91" gibi. **Önerilen puanlar** tablosunda hangi bileşenin kaç puan olması gerektiği yazar (KM, tramer, kriterler, km sınırları; yeni olarak **fiyat**, **model yılı** ve **renk**). Hesap birkaç saniye sürebileceği için her değişiklikte değil, sadece düğmeye basınca yapılır; sonra sıralamanı değiştirirsen öneri "eski" sayılır ve **Uygula** kapanır, tekrar hesaplatırsın.
 3. Beğenirsen **Ayarları Genel Listeye Uygula**: önerilen puanlar genel sıralamanın ayarı olur. Önceki ayarlar yedeklenir, **Ayarlar → Önceki ayarları geri yükle** ile dönersin.
 
 **Renk:** hangi rengi ne kadar tercih ettiğini bilmen gerekmez; sıraladıkça ortaya çıkar (ör. Siyah +24, Gri +4, Beyaz 0). Renk ilanın "Renk" alanından okunur, tonlar ana renge toplanır ("Gri (Gümüş)" → Gri). Bir renk ancak sıraladığın ilanlarda en az 2 kez geçiyorsa öğrenilir; tek ilanın yeri renge yüklenmesin diye.
