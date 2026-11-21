@@ -51,6 +51,11 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 - Filtre GM'de `filter` anahtarında, bilgisayara özel; eşitlenmez. Filtre açıkken sıralama tek tablo olur ve Claude metni sadece filtredekileri alır.
 - Yazarken liste ve düğmeler yeniden çizilir (`refreshFiltered`), giriş kutuları çizilmez ki odak kaybolmasın.
 
+## Var/Yok
+
+- Her kriterde Var/Yok her zaman seçilebilir; metinde birebir geçse bile (ilan metni yanıltabilir). `evalCriteria`'da elle karar metinden ve fotoğraftan önce gelir.
+- Eski varsayılan anahtar kelime listeleri `OLD_KEYWORDS`'te; kullanıcı hiç değiştirmediyse `loadConfig` yenisine çevirir ("kırmızı iç" → "kırmızı iç döşeme": tek başına iç aydınlatma ya da dikiş de olabiliyor).
+
 ## Elle eleme
 
 - `manual.reject` ({ v, at }): Var/Yok ile aynı mekanizma (eşitleme, geri alma, `data-manual` tıklaması). `isRejectedByMe`: sadece kullanıcının kendi kararı eler (`evalHard` ilk neden "Elle elendi"); dahil edilen birinin elemesi `ruleFlags`'te "ali bu ilanı eledi" uyarısıdır, `ownCopyOf` ile kopyaya geçmez. Düğme `rejectBtn`: not alanının yanında (ayrıntılar, ilan sayfası kartı, karşılaştırma), Benim sıralamam satırında ve Elenen listesinde.

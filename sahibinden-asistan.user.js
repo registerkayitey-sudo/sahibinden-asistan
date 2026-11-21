@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.12.0
+// @version      0.12.1
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -66,7 +66,7 @@
         { id: 'msport', name: 'M Sport / First Edition', points: 30, keywords: ['m sport', 'msport', 'm-sport', 'm sport paket', 'first edition'] },
         {
           id: 'kirmizi', name: 'Kırmızı koltuk', points: 30,
-          keywords: ['kırmızı koltuk', 'kırmızı deri', 'kırmızı döşeme', 'kırmızı iç', 'fiona red', 'tacora red', 'mugello red', 'coral red'],
+          keywords: ['kırmızı koltuk', 'kırmızı deri', 'kırmızı döşeme', 'kırmızı iç döşeme', 'fiona red', 'tacora red', 'mugello red', 'coral red'], // "kırmızı iç" tek başına koltuk demek değil (iç aydınlatma, dikiş)
           vision: 'Are the car seats red (red leather or red upholstery)?',
           views: ['interior'],
         },
@@ -418,7 +418,6 @@
         name: c.name, points: crit[c.id].met ? c.points : 0, max: c.points, via: crit[c.id].via, pending: crit[c.id].pending,
         // Metinde birebir geçen kriterde sorulacak bir şey yok; gerisini elle doğrulayabilirsin.
         key: `crit:${c.id}`, met: crit[c.id].met, manual: crit[c.id].manual, manualBy: crit[c.id].by || null,
-        askable: !String(crit[c.id].via || '').startsWith('metin:'),
       })),
     ];
     const total = lines.reduce((a, x) => a + x.points, 0);
@@ -1218,6 +1217,11 @@
     'Are the wheels BMW Y-spoke style 554M (thin double spokes forming Y shapes, usually dark/black)?': 'jant',
   };
 
+  // Eski varsayılan anahtar kelime listeleri → kriter id'si (hiç değiştirilmemişse loadConfig yenisine çevirir)
+  const OLD_KEYWORDS = {
+    kirmizi: ['kırmızı koltuk', 'kırmızı deri', 'kırmızı döşeme', 'kırmızı iç', 'fiona red', 'tacora red', 'mugello red', 'coral red'],
+  };
+
   function loadConfig() {
     const c = GM_getValue('config', null) || JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     // 0.6.0 öncesi kaydedilmiş ayarlarda belirsiz ifade listesi yok: aynı adlı varsayılan donanımdan al
@@ -1231,6 +1235,7 @@
       if (cr.vision && !cr.views && d && d.views) cr.views = d.views.slice();
       // Hiç değiştirilmemiş eski varsayılan soru yenisine geçer (eskisi rengi sormadığı için neredeyse her janta "evet" diyordu)
       if (d && OLD_VISION[cr.vision] === cr.id) cr.vision = d.vision;
+      if (d && OLD_KEYWORDS[cr.id] && JSON.stringify(cr.keywords) === JSON.stringify(OLD_KEYWORDS[cr.id])) cr.keywords = d.keywords.slice();
     }
     return c;
   }
@@ -2403,7 +2408,8 @@
     const man = manualOf(l);
     const lines = r.score.lines
       .map((x) => {
-        let btns = x.key && x.askable ? manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key], man[x.key] !== undefined && !x.manualBy) : '';
+        // Metinde geçse de Var/Yok seçilebilir: ilan metni yanıltabilir ("kırmızı iç aydınlatma"), senin kararın önce gelir
+        let btns = x.key ? manualBtns(l.id, x.key, 'Var', 'Yok', man[x.key], man[x.key] !== undefined && !x.manualBy) : '';
         const cid = x.key ? x.key.slice(5) : '';
         const vc = cid && (cfg.scoring.criteria || []).find((c) => c.id === cid && c.vision);
         if (vc && man[x.key] === true && !x.manualBy && (l.images || []).some(safeImg)) {

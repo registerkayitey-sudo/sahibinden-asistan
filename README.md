@@ -89,7 +89,7 @@ Rozetler sadece açık olan sayfayı okur; Sahibinden'e fazladan istek atılmaz.
 
 "Kontrol edilecekler" listesinde, ilandan doğrulanamayan her şartın yanında **Var / Yok** düğmeleri çıkar (ör. "Hayalet gösterge (HUD) ilanda geçmiyor"). İlana bakıp işaretlersin: **Var** dersen ilan o şartı sağlamış sayılır ve sıralamaya girer, **Yok** dersen elenir. Yanlış bastıysan **geri al** ile kaldırırsın; elenenler listesindeki ilanlarda da bu düğme durur.
 
-Puan dökümündeki kriterleri de aynı şekilde elle işaretleyebilirsin. Senin kararın metin ve fotoğraf analizinin önüne geçer, yerel AI elle karara bağladığın kriterlere bir daha bakmaz. Kararlar ilanla birlikte saklanır, ayar değiştirince silinmez. GitHub paylaşımı açıksa diğer bilgisayarlarına da gider.
+Puan dökümündeki kriterleri de aynı şekilde elle işaretleyebilirsin; ilan metninde geçse bile (ör. "kırmızı iç aydınlatma" yazan ama koltuğu siyah bir ilanda **Yok** diyebilirsin). Senin kararın metin ve fotoğraf analizinin önüne geçer, yerel AI elle karara bağladığın kriterlere bir daha bakmaz. Kararlar ilanla birlikte saklanır, ayar değiştirince silinmez. GitHub paylaşımı açıksa diğer bilgisayarlarına da gider.
 
 **Olması gereken donanımlar (HUD gibi)** puan dökümünün en üstünde "şart" olarak durur ve metinden "var" denmiş olsa bile **Var/Yok** ile değiştirilebilir. Satıcılar "hayalet" kelimesini HUD dışındaki şeyler için de kullanıyor (ör. "yarı hayalet ekran", "hayalet kadran", "dijital hayalet gösterge (Live Cockpit)"). İlanda sadece bu tür ifadeler geçiyorsa HUD "var" sayılmaz, "Kontrol edilecekler"e düşer. Bu liste ayarlardaki `unsureKeywords` alanında.
 

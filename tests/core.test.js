@@ -299,6 +299,16 @@ eq('arkadaşın elemesi uyarı olarak görünür', A.ruleFlags(aliRej, cfg, A.ev
 eq('arkadaşın elemesi kopyaya geçmez', (A.ownCopyOf(aliRej).manual || {}).reject, undefined);
 eq('elle elenen Claude metnine girmez', A.claudePrompt(A.computeRows({ x: { ...rej, id: 'x' } }, cfg), cfg).includes('### '), false);
 
+// Metinde geçse de senin Var/Yok kararın geçerli
+const txtRed = { ...base, description: 'Kırmızı deri koltuklar.' };
+eq('metin var der', A.evalCriteria(txtRed, cfg).kirmizi.met, true);
+const txtRedNo = { ...txtRed, manual: { 'crit:kirmizi': { v: false, at: 1 } } };
+eq('metinde geçse de Yok kararı geçerli', [A.evalCriteria(txtRedNo, cfg).kirmizi.met, A.evalCriteria(txtRedNo, cfg).kirmizi.via], [false, 'senin kontrolün: yok']);
+eq('Yok kararı puanı düşürür', A.scoreListing(txtRedNo, cfg).lines.find((x) => x.key === 'crit:kirmizi').points, 0);
+eq('her kriter satırında karar anahtarı var (Var/Yok düğmesi)', A.scoreListing(txtRed, cfg).lines.filter((x) => x.key).length, cfg.scoring.criteria.filter((c) => c.points > 0).length);
+eq('"kırmızı iç aydınlatma" kırmızı koltuk değil', A.evalCriteria({ ...base, description: 'Kırmızı iç aydınlatma, siyah deri koltuk.' }, cfg).kirmizi.met, false);
+eq('"kırmızı iç döşeme" kırmızı koltuk', A.evalCriteria({ ...base, description: 'Kırmızı iç döşeme.' }, cfg).kirmizi.met, true);
+
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));
 eq('ayarlar-bmw.json = DEFAULT_CONFIG', require('util').isDeepStrictEqual(fileCfg, A.DEFAULT_CONFIG), true);
