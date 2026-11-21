@@ -141,7 +141,7 @@ eq('rozet: doğrulanamadı', [bUnsure.tone, bUnsure.title.startsWith('Doğrulana
 const bTrack = A.listBadge({ ...base, track: { status: { v: 'teklif', at: 1 }, note: { v: 'son teklif 2.25', at: 1 } } }, cfg);
 eq('rozet: durum ve not', [bTrack.text.endsWith(' · Teklif verildi'), bTrack.title.includes('Not: son teklif 2.25')], [true, true]);
 const bClosed = A.listBadge({ ...base, track: { status: { v: 'satildi', at: 1 } } }, cfg);
-eq('rozet: kapanmış', [bClosed.tone, bClosed.text, bClosed.dim], ['muted', 'Satılmış', true]);
+eq('rozet: satıldı', [bClosed.tone, bClosed.text, bClosed.dim], ['bad', 'SATILDI', true]);
 
 // Arkadaşın ilanını kendine kopyalamak: onun kararları, analizi, durumu ve notu seninmiş gibi geçmez
 const aliRec = { ...base, id: 'z', manual: { 'crit:kirmizi': { v: true, at: 1 } }, ai: { vision: vis('kirmizi', true, 2, 0), text: { ozet: 'ali özeti', artilar: [], eksiler: [], uyarilar: [], at: 1 } }, track: { status: { v: 'satildi', at: 1 }, note: { v: 'ali notu', at: 1 } } };
@@ -319,6 +319,32 @@ eq('Benim sıralamam: öneri mutlak filtrelere dokunmaz', calA.suggested.hardFil
 eq('Benim sıralamam: öneri kriter listesini değiştirmez (sadece puanlar)', calA.suggested.scoring.criteria.map((c) => [c.id, c.name, c.vision || null]), cfgCal.scoring.criteria.map((c) => [c.id, c.name, c.vision || null]));
 eq('Benim sıralamam: aynı girdi aynı öneri', A.stableStringify(calA.suggested), A.stableStringify(calB.suggested));
 eq('Benim sıralamam: girdiyi değiştirmez', cfgCal.calibration.order.length, corder.length);
+
+// Satılan ilan ve geri ekleme
+const soldCar = { ...base, id: '900', year: 2021, km: 60000, info: { Seri: '2 Serisi', Model: '218i Gran Coupe M Sport', Renk: 'Siyah' },
+  description: 'Sahibinden temiz 218i Gran Coupe M Sport. Bakımları yetkili serviste yapıldı, kış lastikleri hediye. Tramer 45 bin, sağ ön çamurluk boyalı.',
+  parts: { Tavan: 'orijinal', 'Motor Kaputu': 'orijinal', 'Sağ Ön Çamurluk': 'boyalı' }, track: { status: { v: 'satildi', at: 10 } } };
+eq('satıldı: isSold', A.isSold(soldCar), true);
+eq('arkadaşın satıldı demesi seninki değil', A.isSold(A.combineOther(null, soldCar, 'ali')), false);
+const relisted = { ...soldCar, id: '901', km: 61500, track: undefined, description: 'Sahibinden temiz 218i Gran Coupe M Sport. Bakımları yetkili serviste yapıldı, kış lastikleri hediye! Tramer 45 bin, sağ ön çamurluk boyalı. Fiyat düştü.' };
+const m1 = A.sameCar(soldCar, relisted);
+eq('aynı araç: benzer açıklama', [m1.match, m1.reasons.some((r) => r.startsWith('açıklama'))], [true, true]);
+eq('aynı araç: farklı renk değil', A.sameCar(soldCar, { ...relisted, info: { ...relisted.info, Renk: 'Beyaz' } }).match, false);
+eq('aynı araç: km çok geriye gitmiş değil', A.sameCar(soldCar, { ...relisted, km: 40000 }).match, false);
+eq('aynı araç: farklı yıl değil', A.sameCar(soldCar, { ...relisted, year: 2022 }).match, false);
+const sameDamage = { ...relisted, description: 'Galeriden satılık, takas olur. Tramer 45 bin.', id: '902' };
+eq('aynı araç: açıklamada tramer yoksa boya tek başına yetmez', A.sameCar(soldCar, { ...sameDamage, description: 'Galeriden satılık, takas olur.' }).match, false);
+eq('aynı araç: açıklama farklı ama boya ve tramer aynı', A.sameCar(soldCar, sameDamage).match, true);
+const generic1 = { ...soldCar, description: 'Hatasız boyasız tramersiz.', parts: { Tavan: 'orijinal', 'Motor Kaputu': 'orijinal' } };
+const generic2 = { ...generic1, id: '903', track: undefined, description: 'Değişensiz, tramer yok, ilk sahibinden.' };
+eq('sıradan benzer ilanlar aynı araç sayılmaz', A.sameCar(generic1, generic2).match, false);
+const relHit = A.findRelist(relisted, { 900: soldCar, 100: { ...soldCar, id: '100', track: undefined } });
+eq('geri ekleme: sadece satılanlar arasında aranır', relHit && relHit.o.id, '900');
+const rows2 = A.computeRows({ 900: soldCar, 904: { ...base, id: '904', track: { status: { v: 'vazgecti', at: 1 } } }, 1: { ...base, id: '1' } }, cfg);
+eq('satılanlar ayrı listede, vazgeçilenler ayrı', [rows2.sold.map((r) => r.l.id), rows2.closed.map((r) => r.l.id), rows2.passed.map((r) => r.l.id)], [['900'], ['904'], ['1']]);
+const withRel = { ...relisted, relist: { at: 5, of: '900', oldTitle: 'eski', oldPrice: 2200000, reasons: ['açıklamanın %80\'i aynı'] } };
+eq('geri eklenen: rozet bilgisi', [A.listBadge(withRel, cfg).relist, A.listBadge(withRel, cfg).title.startsWith('GERİ EKLENEN İLAN')], [true, true]);
+eq('geri eklenen: Claude metninde', A.comparePrompt(A.computeRows({ 901: withRel }, cfg).passed, cfg).includes('GERİ EKLENEN İLAN'), true);
 
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));

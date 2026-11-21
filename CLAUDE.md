@@ -67,6 +67,11 @@ Proje sahibi (efe) ve arkadaşı geliştiriyor. `main`'e giren her şey Tampermo
 - Her kriterde Var/Yok her zaman seçilebilir; metinde birebir geçse bile (ilan metni yanıltabilir). `evalCriteria`'da elle karar metinden ve fotoğraftan önce gelir.
 - Eski varsayılan anahtar kelime listeleri `OLD_KEYWORDS`'te; kullanıcı hiç değiştirmediyse `loadConfig` yenisine çevirir ("kırmızı iç" → "kırmızı iç döşeme": tek başına iç aydınlatma ya da dikiş de olabiliyor).
 
+## Satılan ve geri eklenen ilanlar
+
+- `isSold`: kullanıcının kendi `track.status = 'satildi'`'si. `computeRows` satılanları `sold`'a, vazgeçilenleri `closed`'a ayırır; arayüzde Satılanlar Elenen'in hemen altında.
+- `relist` ({ at, sameId, soldAt } ya da { at, of, oldTitle, oldUrl, oldPrice, reasons }): aynı numara arama sonuçlarında ya da ilan sayfasında yayında görülünce (`decorateSearch`, `saveCurrentListing`; satıldı işareti kalkar) ya da ilk kez açılan ilan `findRelist`/`sameCar` ile satılan bir araca eşleşince. `sameCar`: marka/seri/model/renk ve yıl aynı, km makul, ve (açıklama Jaccard ≥ 0,5 ya da en az bir boyalı/değişen parça ile boya/değişen + tramer tutarı aynı). İlan sayfası "yayından kaldırılmış" gibi bir metin gösteriyorsa (`isRemovedPage`, gerçek sayfayla doğrulanmadı) yayında sayılmaz.
+
 ## Elle eleme
 
 - `manual.reject` ({ v, at }): Var/Yok ile aynı mekanizma (eşitleme, geri alma, `data-manual` tıklaması). `isRejectedByMe`: sadece kullanıcının kendi kararı eler (`evalHard` ilk neden "Elle elendi"); dahil edilen birinin elemesi `ruleFlags`'te "ali bu ilanı eledi" uyarısıdır, `ownCopyOf` ile kopyaya geçmez. Düğme `rejectBtn`: not alanının yanında (ayrıntılar, ilan sayfası kartı, karşılaştırma), Benim sıralamam satırında ve Elenen listesinde.

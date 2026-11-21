@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.12.3
+// @version      0.13.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -245,6 +245,21 @@
     const note = t.note && typeof t.note.v === 'string' ? t.note.v : '';
     return { status, note, by: (l && l._trackBy) || null };
   }
+  // Satıldı: senin "Satılmış" durumun (arkadaşınınki seninkini etkilemez)
+  const isSold = (l) => {
+    const t = trackOf(l);
+    return t.status === 'satildi' && !t.by;
+  };
+
+  // Geri eklenen ilan: satıldı dediğin ilan aynı numarayla yeniden yayında görünürse { sameId } ya da satıcı aynı aracı
+  // yeni numarayla yayınlarsa { of: eski ilan id, oldTitle, oldUrl, oldPrice, reasons }. relist.at: tespit zamanı.
+  const relistOf = (l) => (l && l.relist && l.relist.at ? l.relist : null);
+  function relistText(rel) {
+    if (!rel) return '';
+    if (rel.sameId) return `Satıldı olarak işaretlemiştin${rel.soldAt ? ` (${new Date(rel.soldAt).toLocaleDateString('tr-TR')})` : ''}; ilan aynı numarayla yeniden yayında.`;
+    return `Satıldı olarak işaretlediğin "${rel.oldTitle || ''}" (#${rel.of}) ilanının yeniden yayınlanmış hali olabilir${(rel.reasons || []).length ? ': ' + rel.reasons.join(', ') : ''}${rel.oldPrice ? `; önceki fiyat ${fmtTL(rel.oldPrice)}` : ''}.`;
+  }
+
   const isClosed = (l) => {
     const t = trackOf(l);
     return !t.by && !!(statusInfo(t.status) || {}).closed;
@@ -568,6 +583,60 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Aynı araç mı? (satılan ilanın yeni numarayla geri eklenmesi)
+  // ---------------------------------------------------------------------------
+  const infoVal = (l, label) => {
+    const k = Object.keys((l && l.info) || {}).find((x) => fold(x) === fold(label));
+    return k ? fold(l.info[k]) : '';
+  };
+  function wordSet(s) {
+    return new Set(fold(s).replace(/[^a-z0-9 ]/g, ' ').split(' ').filter((w) => w.length >= 3));
+  }
+  function jaccard(a, b) {
+    const A = wordSet(a), B = wordSet(b);
+    if (!A.size || !B.size) return 0;
+    let n = 0;
+    for (const w of A) if (B.has(w)) n++;
+    return n / (A.size + B.size - n);
+  }
+
+  // Model, yıl ve renk aynı; km makul (yeni ilanda biraz artmış olabilir) ve ya açıklama büyük ölçüde aynı ya da
+  // boya/değişen (en az bir boyalı/değişen parça) ve tramer tutarı birebir aynı. Hepsi orijinal, tramersiz sıradan
+  // ilanlar tek başına yetmez: aynı model, yıl ve renkte çok araç var.
+  function sameCar(oldL, newL) {
+    const no = { match: false, reasons: [], desc: 0 };
+    if (!oldL || !newL || String(oldL.id) === String(newL.id)) return no;
+    if (!oldL.year || oldL.year !== newL.year) return no;
+    for (const f of ['Marka', 'Seri', 'Model', 'Renk']) {
+      const a = infoVal(oldL, f), b = infoVal(newL, f);
+      if (a && b && a !== b) return no;
+    }
+    if (oldL.km != null && newL.km != null && (newL.km < oldL.km - 2000 || newL.km > oldL.km + 20000)) return no;
+    const desc = jaccard(oldL.description, newL.description);
+    const dirty = (l) => Object.entries(l.parts || {}).filter(([, st]) => st !== 'orijinal').map(([p, st]) => `${p}:${st}`).sort().join('|');
+    const partsKnown = Object.keys(oldL.parts || {}).length > 0 && Object.keys(newL.parts || {}).length > 0;
+    const strongParts = partsKnown && dirty(oldL) !== '' && dirty(oldL) === dirty(newL);
+    const tA = parseTramer(oldL).amount, tB = parseTramer(newL).amount;
+    const tramerSame = tA != null && tA > 0 && tA === tB;
+    const reasons = [];
+    if (desc >= 0.5) reasons.push(`açıklamanın %${Math.round(desc * 100)}'i aynı`);
+    if (strongParts) reasons.push('boya/değişen aynı');
+    if (tramerSame) reasons.push('tramer tutarı aynı');
+    return { match: desc >= 0.5 || (strongParts && tramerSame), reasons, desc };
+  }
+
+  // Yeni görülen ilan, satıldı dediğin ilanlardan birinin geri eklenmiş hali mi? En benzerini döner.
+  function findRelist(newL, listings) {
+    let best = null;
+    for (const o of Object.values(listings || {})) {
+      if (!isSold(o)) continue;
+      const m = sameCar(o, newL);
+      if (m.match && (!best || m.desc > best.m.desc)) best = { o, m };
+    }
+    return best;
+  }
+
+  // ---------------------------------------------------------------------------
   // Fotoğraf analizi: oylama ve doğruluk
   // ---------------------------------------------------------------------------
   // Model her fotoğrafın türünü de söyler. Kriterin views listesi varsa oy sadece o türdeki
@@ -759,7 +828,8 @@
       unsure: open.filter((r) => r.hard.status === 'belirsiz').sort(byScore),
       rejected: open.filter((r) => r.hard.status === 'elendi'),
       tracked: open.filter((r) => trackOf(r.l).status && !trackOf(r.l).by).sort((a, b) => stage(b) - stage(a) || byScore(a, b)),
-      closed: rows.filter((r) => isClosed(r.l)),
+      closed: rows.filter((r) => isClosed(r.l) && !isSold(r.l)), // vazgeçilenler
+      sold: rows.filter((r) => isSold(r.l)),
       all: rows,
     };
   }
@@ -844,7 +914,8 @@
     const delta = first && l.price && first !== l.price ? l.price - first : 0;
     const priceNote = delta ? `Fiyat: ${fmtTL(first)} → ${fmtTL(l.price)}` : '';
     const note = t.note ? `${t.by ? t.by + ' notu' : 'Not'}: ${t.note}` : '';
-    if (isClosed(l)) return { tone: 'muted', text: statusInfo(t.status).label, dim: true, delta, title: [note, priceNote].filter(Boolean).join('\n') };
+    const rel = relistOf(l);
+    if (isClosed(l)) return { tone: isSold(l) ? 'bad' : 'muted', text: isSold(l) ? 'SATILDI' : statusInfo(t.status).label, dim: true, delta, relist: !!rel, title: [note, priceNote].filter(Boolean).join('\n') };
     const hard = evalHard(l, cfg);
     const sc = scoreListing(l, cfg);
     const pts = `${Math.round(sc.total)}/${sc.max}`;
@@ -853,7 +924,7 @@
     if (hard.status === 'gecti') b = { tone: 'good', text: `✓ ${pts}`, why: '' };
     else if (hard.status === 'belirsiz') b = { tone: 'warn', text: `? ${pts}`, why: 'Doğrulanamayan: ' + hard.unknowns.map((u) => u.label).join(', ') };
     else b = { tone: 'bad', text: `✗ ${hard.fails[0]}${hard.fails.length > 1 ? ` +${hard.fails.length - 1}` : ''}`, why: 'Elendi: ' + hard.fails.join(', '), dim: true };
-    return { tone: b.tone, text: b.text + st, dim: !!b.dim, delta, title: [b.why, note, priceNote].filter(Boolean).join('\n') };
+    return { tone: b.tone, text: b.text + st, dim: !!b.dim, delta, relist: !!rel, title: [rel ? 'GERİ EKLENEN İLAN: ' + relistText(rel) : '', b.why, note, priceNote].filter(Boolean).join('\n') };
   }
 
   // ---------------------------------------------------------------------------
@@ -1093,6 +1164,8 @@
     if (r.hard.unknowns.length) out.push(`Doğrulanamayanlar: ${r.hard.unknowns.map((u) => u.label).join('; ')}`);
     if (r.hard.decided.length) out.push(`Elle kontrol edilenler: ${r.hard.decided.map((d) => `${d.label} → ${d.ok ? 'var/uygun' : 'yok/uygun değil'}${d.by ? ` (${d.by} kontrol etti)` : ''}`).join('; ')}`);
     if (r.flags.length) out.push(`Uyarılar: ${r.flags.join('; ')}`);
+    const rel = relistOf(l);
+    if (rel) out.push(`GERİ EKLENEN İLAN: ${relistText(rel)}`);
     const tr = trackOf(l);
     if (tr.status || tr.note) {
       const who = tr.by ? `${tr.by} adlı arkadaşımın takibi` : 'Benim takibim';
@@ -1158,7 +1231,7 @@
     DEFAULT_CONFIG, fold, findKeyword, parseTramer, evalHard, evalCriteria, kmScore, tramerScore, scoreListing, ruleFlags, marketModel, computeRows, claudePrompt,
     stableStringify, mergeSame, combineOther, ownCopyOf, manualOf, STATUSES, trackOf, comparePrompt,
     countPhotoAnswer, voteDecided, voteResult, spreadOrder, visionAccuracy, listBadge, visionKey,
-    rangeScore, calibrate, pairAgreement, colorOf, importantOf,
+    rangeScore, calibrate, pairAgreement, colorOf, isSold, sameCar, findRelist, relistOf, importantOf,
     EMPTY_FILTER, filterFacets, rowHas, filterActive, matchFilter, applyFilter, facetCounts,
   };
   if (typeof module !== 'undefined' && module.exports) {
@@ -1367,6 +1440,9 @@
     };
   }
 
+  // Sahibinden kaldırılmış ilanın sayfasını gösteriyorsa (bilgileriyle birlikte) ilan yayında sayılmaz
+  const isRemovedPage = () => /yayından kaldırıl|yayında değil|ilan yayından kalk|ilan satılmış/i.test((document.body && document.body.innerText || '').slice(0, 3000));
+
   function saveCurrentListing() {
     const l = extractListing();
     if (!l.title || (!l.price && !l.km)) return null;
@@ -1374,7 +1450,17 @@
     const now = Date.now();
     const history = prev && prev.priceHistory ? prev.priceHistory.slice() : [];
     if (l.price && (!history.length || history[history.length - 1].price !== l.price)) history.push({ price: l.price, at: now });
-    const keep = prev ? { ai: prev.ai, manual: prev.manual, track: prev.track, copiedFrom: prev.copiedFrom } : {};
+    const keep = prev ? { ai: prev.ai, manual: prev.manual, track: prev.track, copiedFrom: prev.copiedFrom, relist: prev.relist } : {};
+    const live = !isRemovedPage();
+    if (live && prev && isSold(prev)) {
+      // Satıldı dediğin ilan aynı numarayla yeniden yayında: satıldı işareti kalkar, ilan sıralamaya döner
+      keep.relist = { at: now, sameId: true, soldAt: prev.track.status.at };
+      keep.track = { ...(prev.track || {}), status: { v: null, at: now } };
+    } else if (live && !prev) {
+      // İlk kez görülen ilan: satıldı dediğin bir aracın yeni numarayla geri eklenmiş hali mi?
+      const hit = findRelist(l, loadListings());
+      if (hit) keep.relist = { at: now, of: String(hit.o.id), oldTitle: hit.o.title, oldUrl: hit.o.url, oldPrice: hit.o.price, reasons: hit.m.reasons };
+    }
     const rec = { ...l, ...keep, firstSeen: prev ? prev.firstSeen : now, lastSeen: now, priceHistory: history };
     putListing(rec);
     saveQueue(loadQueue().filter((u) => u !== l.url));
@@ -1421,17 +1507,27 @@
     // Listede görünen fiyat kayıtlı fiyattan farklıysa kendi kaydını güncelle (ilanı açmana gerek kalmadan)
     const now = Date.now();
     let changed = 0;
+    let relisted = 0;
     for (const r of rows) {
-      const own = getListing(r.id);
-      if (!own || !r.price || own.price === r.price) continue;
-      const hist = (own.priceHistory || []).slice();
-      hist.push({ price: r.price, at: now });
-      putListing({ ...own, price: r.price, priceHistory: hist, lastSeen: now });
-      changed++;
+      let own = getListing(r.id);
+      if (!own) continue;
+      let dirty = false;
+      if (isSold(own)) {
+        // Satıldı dediğin ilan arama sonuçlarında: aynı numarayla yeniden yayında
+        own = { ...own, relist: { at: now, sameId: true, soldAt: own.track.status.at }, track: { ...(own.track || {}), status: { v: null, at: now } }, lastSeen: now };
+        relisted++;
+        dirty = true;
+      }
+      if (r.price && own.price !== r.price) {
+        own = { ...own, price: r.price, priceHistory: [...(own.priceHistory || []), { price: r.price, at: now }], lastSeen: now };
+        changed++;
+        dirty = true;
+      }
+      if (dirty) putListing(own);
     }
-    if (changed) {
+    if (changed || relisted) {
       scheduleSync();
-      toast(`${changed} kayıtlı ilanın fiyatı değişmiş, güncellendi.`);
+      toast([relisted ? `${relisted} ilan GERİ EKLENEN İLAN: satıldı işaretlemiştin, yeniden yayında` : '', changed ? `${changed} kayıtlı ilanın fiyatı değişmiş, güncellendi` : ''].filter(Boolean).join(' · '), relisted ? 8000 : 3500);
     }
     const cfg = loadConfig();
     const all = loadAllListings();
@@ -1447,6 +1543,7 @@
       const els = [badgeEl(b.text, BADGE_BG[b.tone], b.title)];
       if (b.delta) els.push(badgeEl(`${b.delta < 0 ? '↓' : '↑'} ${fmtShort(b.delta)}`, b.delta < 0 ? BADGE_BG.good : BADGE_BG.bad, b.title));
       if (l && l._owner) els.push(badgeEl(l._owner, BADGE_BG.muted, `${l._owner} kaydetmiş`));
+      if (l && relistOf(l)) els.unshift(badgeEl('GERİ EKLENEN İLAN', '#c2410c', relistText(relistOf(l))));
       r.a.after(...els);
       r.row.style.opacity = b.dim ? '0.5' : '';
     }
@@ -2179,6 +2276,8 @@
     .chip.st-arandi, .chip.st-ekspertiz, .chip.st-teklif { background: var(--accent); border-color: var(--accent); color: #fff; }
     .chip.st-vazgecti, .chip.st-satildi { text-decoration: line-through; }
     .chip.mine { border-color: var(--accent); color: var(--accent); background: transparent; }
+    .chip.sold { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 700; text-decoration: none; }
+    .chip.relist { background: #c2410c; border-color: #c2410c; color: #fff; font-weight: 700; }
     .chip.notmine { border-style: dashed; color: var(--muted); background: transparent; }
     .mini.addrank { padding: 0 6px; margin-left: 3px; line-height: 1.3; }
     .track { margin: 2px 0 10px; }
@@ -2309,7 +2408,10 @@
   function statusChip(l) {
     const t = trackOf(l);
     const out = [];
-    if (t.status) out.push(`<span class="chip st-${t.status}"${t.by ? ` title="${esc(t.by)} işaretledi"` : ''}>${esc(statusInfo(t.status).label)}${t.by ? ' · ' + esc(t.by) : ''}</span>`);
+    if (isSold(l)) out.push('<span class="chip sold" title="Satılmış olarak işaretledin">SATILDI</span>');
+    else if (t.status) out.push(`<span class="chip st-${t.status}"${t.by ? ` title="${esc(t.by)} işaretledi"` : ''}>${esc(statusInfo(t.status).label)}${t.by ? ' · ' + esc(t.by) : ''}</span>`);
+    const rel = relistOf(l);
+    if (rel) out.push(`<span class="chip relist" title="${esc(relistText(rel))}">GERİ EKLENEN İLAN</span>`);
     if (t.note) out.push(`<span title="${esc((t.by ? t.by + ': ' : '') + t.note)}">📝</span>`);
     return out.length ? ' ' + out.join(' ') : '';
   }
@@ -2716,8 +2818,20 @@
           .join('')}</li>`)
         .join('')}</ul></details>`;
     }
+    if (result.sold.length) {
+      // Aynı araç yeni numarayla geri eklendiyse satılan ilanın yanında yeni ilana bağlantı
+      const relistedAs = new Map(result.all.filter((r) => relistOf(r.l) && relistOf(r.l).of).map((r) => [String(relistOf(r.l).of), r.l]));
+      html += `<details ${state.soldOpen ? 'open' : ''}><summary data-sold-toggle>Satılanlar: ${result.sold.length} ilan <span class="muted">(sıralamaya ve AI analizine girmez; araç yeniden yayınlanırsa "GERİ EKLENEN İLAN" diye işaretlenir)</span></summary><ul>${result.sold
+        .map((r) => {
+          const nl = relistedAs.get(String(r.l.id));
+          return `<li><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)} <span class="muted">${fmtTL(r.l.price)}${trackOf(r.l).note ? ' · ' + esc(trackOf(r.l).note.slice(0, 120)) : ''}</span>
+            ${nl ? ` <span class="chip relist">GERİ EKLENDİ</span> → <a href="${esc(safeUrl(nl.url))}" target="_blank">${esc(nl.title)}</a> <span class="muted">${fmtTL(nl.price)}</span>` : ''}
+            <button class="mini" data-track-status="" data-id="${esc(r.l.id)}" title="Satıldı işaretini kaldır, ilan sıralamaya dönsün">geri al</button></li>`;
+        })
+        .join('')}</ul></details>`;
+    }
     if (result.closed.length) {
-      html += `<details ${state.closedOpen ? 'open' : ''}><summary data-closed-toggle>Kapananlar: ${result.closed.length} ilan <span class="muted">(vazgeçilen ya da satılan; sıralamaya ve AI analizine girmez)</span></summary><ul>${result.closed
+      html += `<details ${state.closedOpen ? 'open' : ''}><summary data-closed-toggle>Vazgeçilenler: ${result.closed.length} ilan <span class="muted">(sıralamaya ve AI analizine girmez)</span></summary><ul>${result.closed
         .map((r) => `<li><a href="${esc(safeUrl(r.l.url))}" target="_blank">${esc(r.l.title)}</a>${statusChip(r.l)} <span class="muted">${esc(trackOf(r.l).note.slice(0, 120))}</span>
           <button class="mini" data-track-status="" data-id="${esc(r.l.id)}" title="Durumu temizle, ilan sıralamaya geri dönsün">geri al</button></li>`)
         .join('')}</ul></details>`;
@@ -2795,7 +2909,7 @@
             const l = all[id];
             const g = generalPos.get(id);
             const st = r ? r.hard.status : null;
-            const where = g ? `genel listede #${g}` : st === 'elendi' ? 'elendi' : st === 'belirsiz' ? 'doğrulanamadı' : isClosed(l) ? 'kapandı' : '';
+            const where = g ? `genel listede #${g}` : isSold(l) ? 'satıldı' : st === 'elendi' ? 'elendi' : st === 'belirsiz' ? 'doğrulanamadı' : isClosed(l) ? 'vazgeçildi' : '';
             const sp = sugPos ? sugPos.get(id) : null;
             return `<li draggable="true" data-rank-id="${esc(id)}"><span class="grip" title="Sürükle">⠿</span><span class="pos">${i + 1}</span>
               <span class="t"><a href="${esc(safeUrl(l.url))}" target="_blank">${esc(l.title)}</a>${statusChip(l)}<div class="meta">${fmtTL(l.price)} · ${fmtNum(l.km)} km · ${esc(l.year ?? '–')} · ${where}${sp ? ` · öneriyle ${sp}. sırada${sp !== i + 1 ? (sp < i + 1 ? ' ↑' : ' ↓') : ' ✓'}` : ''}</div></span>
@@ -3214,6 +3328,10 @@
       state.rejOpen = !state.rejOpen;
       return;
     }
+    if (e.target.closest('summary[data-sold-toggle]')) {
+      state.soldOpen = !state.soldOpen;
+      return;
+    }
     if (e.target.closest('summary[data-closed-toggle]')) {
       state.closedOpen = !state.closedOpen;
       return;
@@ -3587,7 +3705,9 @@
         const sc = scoreListing(view, cfg);
         const label = hard.status === 'gecti' ? '✓ filtreleri geçti' : hard.status === 'belirsiz' ? '? doğrulanamadı' : '✗ elendi: ' + hard.fails.join(', ');
         render();
-        toast(`Kaydedildi · ${Math.round(sc.total)}/${sc.max} puan · ${label}`);
+        const rel = relistOf(l);
+        if (rel && rel.at === l.lastSeen) toast(`GERİ EKLENEN İLAN · ${relistText(rel)}`, 9000);
+        else toast(`Kaydedildi · ${Math.round(sc.total)}/${sc.max} puan · ${label}`);
         scheduleSync(3000);
       } else {
         toast('İlan bilgileri okunamadı. Sayfa yapısı beklenenden farklı olabilir.');
