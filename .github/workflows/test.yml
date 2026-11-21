@@ -1,0 +1,20 @@
+# Her push'ta ve pull request'te testler: main'e giren her şey Tampermonkey ile herkese otomatik gider,
+# bozuk bir değişiklik (ör. "Benim sıralamam"ı bozan) birleştirilmeden yakalansın.
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sözdizimi
+        run: node --check sahibinden-asistan.user.js
+      - name: Testler
+        run: node tests/core.test.js

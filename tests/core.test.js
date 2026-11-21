@@ -309,6 +309,17 @@ eq('her kriter satırında karar anahtarı var (Var/Yok düğmesi)', A.scoreList
 eq('"kırmızı iç aydınlatma" kırmızı koltuk değil', A.evalCriteria({ ...base, description: 'Kırmızı iç aydınlatma, siyah deri koltuk.' }, cfg).kirmizi.met, false);
 eq('"kırmızı iç döşeme" kırmızı koltuk', A.evalCriteria({ ...base, description: 'Kırmızı iç döşeme.' }, cfg).kirmizi.met, true);
 
+// "Benim sıralamam" koruması: öneri sıralamana, önemli işaretlerine ve mutlak filtrelere asla dokunmaz, her seferinde aynı sonucu verir
+const cfgCal = JSON.parse(JSON.stringify(cfg));
+cfgCal.calibration = { order: corder.slice(), important: ['year', 'price'] };
+const calA = A.calibrate(CL, cfgCal.calibration.order, cfgCal);
+const calB = A.calibrate(CL, cfgCal.calibration.order, cfgCal);
+eq('Benim sıralamam: öneri sıralamayı ve önemli işaretlerini korur', calA.suggested.calibration, cfgCal.calibration);
+eq('Benim sıralamam: öneri mutlak filtrelere dokunmaz', calA.suggested.hardFilters, cfgCal.hardFilters);
+eq('Benim sıralamam: öneri kriter listesini değiştirmez (sadece puanlar)', calA.suggested.scoring.criteria.map((c) => [c.id, c.name, c.vision || null]), cfgCal.scoring.criteria.map((c) => [c.id, c.name, c.vision || null]));
+eq('Benim sıralamam: aynı girdi aynı öneri', A.stableStringify(calA.suggested), A.stableStringify(calB.suggested));
+eq('Benim sıralamam: girdiyi değiştirmez', cfgCal.calibration.order.length, corder.length);
+
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));
 eq('ayarlar-bmw.json = DEFAULT_CONFIG', require('util').isDeepStrictEqual(fileCfg, A.DEFAULT_CONFIG), true);

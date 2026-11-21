@@ -23,6 +23,17 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 - Script'i panoya kopyalarken macOS'ta kodlamayı belirt, yoksa Türkçe karakterler bozulur: `LANG=en_US.UTF-8 pbcopy < sahibinden-asistan.user.js`.
 - Sahibinden.com sayfalarına otomatik istek atma, tarama yapma, bot kontrolünü aşmaya çalışma. Script sadece kullanıcının açtığı sayfaları okur; fotoğraflar sadece kullanıcı AI analizini başlatınca `i0.shbdn.com`'dan indirilir.
 
+## Katkı kuralları: "Benim sıralamam"ı bozma
+
+Proje sahibi (efe) ve arkadaşı geliştiriyor. `main`'e giren her şey Tampermonkey `@updateURL` ile herkese kendiliğinden gider; sahibinin elle sıralaması (`config.calibration`) ve ondan öğrenilmiş puanlar korunmalı:
+
+- `config.calibration` (`order`, `important`), ilanlardaki `manual` ve `track`, `scoring` alanlarının biçimi ve anlamı değişmez. Gerekirse `loadConfig`'te geriye uyumlu geçiş yaz; eski kayıtlı ayarlar okunabilmeli.
+- Kullanıcının ayarını asla toptan sıfırlama ya da ezme. Varsayılan değişirse sadece hiç değiştirilmemiş eski varsayılanı çevir (`OLD_VISION`, `OLD_KEYWORDS`).
+- Puanlamaya yeni bileşen: varsayılan 0 puan, `calibComponents` / `calibFeatures`'a da ekle, `scoreListing` ile tutarlı olsun.
+- `tests/core.test.js`'teki "Benim sıralamam" ve "kalibrasyon" testlerini gevşetme; kırılıyorsa kodu düzelt.
+- Sahibinin veri reposuna yazma token'ıyla eşitleme denemesi yapma; kendi verinle, ayrı tarayıcı profilinde, gerekirse **Sadece oku** ile dene.
+- Arkadaş fork + pull request ile çalışır; testler (GitHub Actions, `.github/workflows/test.yml`) geçmeden birleştirilmez.
+
 ## Sahibinden sayfa yapısı (Kasım 2026'da gerçek ilanla doğrulandı)
 
 - Bilgiler: `.classifiedInfoList .classifiedInfoItem` içinde `dt` / `dd`.
@@ -82,8 +93,8 @@ Sahibinden.com araç ilanlarını kaydeden, filtreleyip puanlayan, yerel AI (Oll
 
 ## Git
 
-- Bu repo sadece kişisel hesapla (`registerkayitey-sudo`) kullanılır. Şirket hesabını (`efe-yucel`, `@moment.gs` e-postası) bu repoda kullanma.
-- Mac'te ayarlar sadece bu repoya özel: HTTPS remote, `gh auth git-credential` kimlik yardımcısı, kişisel noreply e-postası. Bilgisayarın genel git ayarlarına dokunma.
+- Repo sahibi (efe) bu repoda sadece kişisel hesabını (`registerkayitey-sudo`) kullanır, şirket hesabını (`efe-yucel`, `@moment.gs` e-postası) asla. Katkıda bulunan arkadaş kendi GitHub hesabıyla fork + pull request açar.
+- Efe'nin Mac'inde ayarlar sadece bu repoya özel: HTTPS remote, `gh auth git-credential` kimlik yardımcısı, kişisel noreply e-postası. Bilgisayarın genel git ayarlarına dokunma.
 - İki bilgisayardan çalışıldığı için işe başlamadan önce `git pull --ff-only` yap.
 - Commit mesajı biçimi: `v0.6.1: kısa özet`.
 

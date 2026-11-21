@@ -162,6 +162,23 @@ Token'ı paylaşmanın bedeli şu: token'ı olan herkes veri reposunun tamamın�
 - **Veri → Tüm ilanları sil** sadece o tarayıcıdaki kopyayı siler. GitHub'daki dosyalar durur, otomatik eşitleme açıksa bir sonraki eşitlemede geri gelir.
 - İlan açıklamalarında satıcı adı ya da telefonu geçebildiği için veri reposu **özel** kalmalı. Script her eşitlemede bunu kontrol eder; repo herkese açıksa hiçbir şey göndermez ve uyarır.
 
+## 6. Geliştirme (katkı)
+
+Kod herkese açık; geliştirmek isteyen GitHub'da **fork** edip değişikliğini **pull request** (PR) olarak gönderir. `main` dalına giren her değişiklik Tampermonkey ile herkese (repo sahibi dahil) **kendiliğinden** gider. Bu yüzden PR'lar testler geçmeden ve repo sahibi gözden geçirmeden birleştirilmez. Her push ve PR'da testler GitHub Actions'ta kendiliğinden çalışır; PR sayfasında yeşil tik görünmeden birleştirme.
+
+**Kurulum:** Node.js 18+ (testler için). Testler: `node tests/core.test.js`. Claude Code kullanıyorsan proje kurallarını `CLAUDE.md`'den okur. Değişikliğini tarayıcıda denemek için Tampermonkey'de linkten kurulu asıl script'i kapat (silme), kendi dosyanı **Yardımcı Araçlar → Dosyadan içe aktar** ile ayrı ekle; bitince seninkini kapatıp asıl script'i aç. İkisi aynı anda açık olursa çakışır.
+
+### "Benim sıralamam"ı bozma
+
+Repo sahibinin elle yaptığı sıralama ve ondan öğrenilen puanlar emek; bir güncellemeyle kaybolmamalı ya da sessizce değişmemeli:
+
+1. **Veri biçimleri kalır.** `config.calibration` (`order`: sıralanan ilan id'leri, `important`: önemli işaretli bileşenler), ilanlardaki `manual` (Var/Yok, elle eleme) ve `track` (durum, not) ile `scoring` alanları silinmez, yeniden adlandırılmaz, anlamı değişmez. Değişiklik gerekiyorsa eski kayıtlı ayarları okuyabilen bir geçiş yazılır (`loadConfig`).
+2. **Ayarlar toptan sıfırlanmaz.** Varsayılan bir değer değişecekse sadece kullanıcının hiç değiştirmediği eski varsayılan yenisine çevrilir (örnek: `OLD_VISION`, `OLD_KEYWORDS`). Kullanıcının kendi değeri asla ezilmez.
+3. **Puanlamaya yeni bileşen varsayılan 0 puanla girer** ve `calibComponents` / `calibFeatures`'a da eklenir; böylece mevcut sıralamalar ve puanlar değişmez, "Benim sıralamam" yeni bileşeni öğrenebilir.
+4. **Testler gevşetilmez.** "Benim sıralamam" ve "kalibrasyon" testleri sıralamanın, önemli işaretlerinin ve mutlak filtrelerin korunduğunu, önerinin tekrarlanabilir olduğunu ve gizli bir tercihi geri bulduğunu kontrol eder. Bunlar kırılıyorsa düzeltilecek olan koddur, test değil.
+5. **Başkasının verisiyle deneme yapılmaz.** Geliştirirken kendi ilanlarınla ve ayrı bir tarayıcı profiliyle dene; repo sahibinin veri reposuna yazma token'ı ile eşitleme denemesi yapma (salt okunur token'la ve **Sadece oku** ile güvenli). Denemeden önce **Veri → Verileri indir** ve **Ayarlar → Dosyaya indir** ile yedek al.
+6. **Her değişiklikte `@version` artar** ve README'de anlatılır.
+
 ## Bilinen sınırlar
 
 - **Sayfa yapısı** Kasım 2026 itibarıyla gerçek bir ilanla doğrulandı. Sahibinden sayfa tasarımını değiştirirse veri okuma bozulabilir; ilan kaydedilince çıkan bildirimde puan veya boya bilgisi tuhaf görünürse haber ver.
