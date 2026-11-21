@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sahibinden Araç Asistanı
 // @namespace    sahibinden-asistan
-// @version      0.13.0
+// @version      0.14.0
 // @description  Gezdiğin ilanları toplar, filtreler, puanlar; yerel AI (Ollama) ile görsel ve metin analizi yapar, piyasa analizi çıkarır. İstersen verileri GitHub üzerinden kendi bilgisayarların ve arkadaşlarınla paylaşır.
 // @homepageURL  https://github.com/registerkayitey-sudo/sahibinden-asistan
 // @updateURL    https://raw.githubusercontent.com/registerkayitey-sudo/sahibinden-asistan/main/sahibinden-asistan.user.js
@@ -53,6 +53,10 @@
       // Fiyat ve model yılı: best değerde tam puan, worst değerde 0. Varsayılan 0 puan; "Benim sıralamam" önerebilir.
       price: { points: 0, best: 1800000, worst: 2400000 },
       year: { points: 0, best: 2024, worst: 2020 },
+      // Boyalı ve değişen parça sayısı: hiç yoksa tam puan, worst ve üstü 0 (lokal boyalı yarım boyalı sayılır).
+      // Varsayılan 0 puan; Benim sıralamam önerebilir.
+      paint: { points: 0, worst: 4 },
+      changed: { points: 0, worst: 2 },
       // Renk başına puan: [{ name: 'Siyah', points: 10 }, …]. Boş: renk puanlamaya girmez; Benim sıralamam öğrenir.
       colors: [],
       tramer: {
@@ -395,6 +399,22 @@
   const colorPoints = (cfg, key) => ((cfg.scoring.colors || []).find((c) => fold(c.name) === key) || {}).points || 0;
 
   // best değerde tam puan, worst değerde 0, arası doğrusal (km ve fiyatta düşük, yılda yüksek iyidir; yön fark etmez)
+  // Boyalı / lokal boyalı / değişmiş parça sayıları (araç şemasındaki bütün parçalar). Bilgi yoksa known: false.
+  function partCounts(l) {
+    const v = Object.values((l && l.parts) || {});
+    return { known: v.length > 0, painted: v.filter((x) => x === 'boyalı').length, local: v.filter((x) => x === 'lokal boyalı').length, changed: v.filter((x) => x === 'değişmiş').length };
+  }
+  // Parça sayısının puandaki payı (0..1): 0 parça tam pay, worst ve üstü 0, arası doğrusal; boya bilgisi yoksa 0
+  const countShare = (n, worst, known) => (!known || !worst ? 0 : Math.max(0, 1 - n / worst));
+  const paintShare = (l, c) => {
+    const p = partCounts(l);
+    return countShare(p.painted + 0.5 * p.local, c && c.worst, p.known);
+  };
+  const changedShare = (l, c) => {
+    const p = partCounts(l);
+    return countShare(p.changed, c && c.worst, p.known);
+  };
+
   function rangeScore(v, c) {
     if (v == null || !c || !c.points || c.best === c.worst) return 0;
     return c.points * Math.max(0, Math.min(1, (v - c.worst) / (c.best - c.worst)));
@@ -422,6 +442,20 @@
         : []),
       ...(s.year && s.year.points > 0
         ? [{ name: 'Model yılı', points: rangeScore(l.year, s.year), max: s.year.points, via: l.year == null ? 'okunamadı' : `${l.year} (${s.year.best} ve sonrası tam puan, ${s.year.worst} ve öncesi 0)` }]
+        : []),
+      ...(s.paint && s.paint.points > 0
+        ? (() => {
+          const p = partCounts(l);
+          return [{ name: 'Boyalı parça', points: s.paint.points * paintShare(l, s.paint), max: s.paint.points,
+            via: p.known ? `${p.painted} boyalı${p.local ? `, ${p.local} lokal boyalı` : ''} (hiç yoksa tam puan, ${s.paint.worst} ve üstü 0)` : 'okunamadı' }];
+        })()
+        : []),
+      ...(s.changed && s.changed.points > 0
+        ? (() => {
+          const p = partCounts(l);
+          return [{ name: 'Değişen parça', points: s.changed.points * changedShare(l, s.changed), max: s.changed.points,
+            via: p.known ? `${p.changed} değişen (hiç yoksa tam puan, ${s.changed.worst} ve üstü 0)` : 'okunamadı' }];
+        })()
         : []),
       ...((s.colors || []).some((c) => c.points > 0)
         ? (() => {
@@ -950,6 +984,8 @@
     (s.tramer.tiers || []).forEach((t, i) => comps.push({ key: 'tier' + i, label: `Tramer ${fmtNum(t.below)} TL altı`, path: ['scoring', 'tramer', 'tiers', i, 'points'], tier: i }));
     comps.push({ key: 'price', label: 'Fiyat', path: ['scoring', 'price', 'points'] });
     comps.push({ key: 'year', label: 'Model yılı', path: ['scoring', 'year', 'points'] });
+    comps.push({ key: 'paint', label: 'Boyalı parça', path: ['scoring', 'paint', 'points'] });
+    comps.push({ key: 'changed', label: 'Değişen parça', path: ['scoring', 'changed', 'points'] });
     (s.colors || []).forEach((c, i) => comps.push({ key: 'color:' + fold(c.name), label: `Renk: ${c.name}`, path: ['scoring', 'colors', i, 'points'], color: fold(c.name) }));
     (s.criteria || []).forEach((c, i) => comps.push({ key: 'crit:' + c.id, label: c.name, path: ['scoring', 'criteria', i, 'points'], crit: c.id }));
     return comps;
@@ -967,6 +1003,8 @@
       if (c.tier !== undefined) return tierIdx === c.tier ? 1 : 0;
       if (c.key === 'price') return rangeScore(l.price, { ...s.price, points: 1 });
       if (c.key === 'year') return rangeScore(l.year, { ...s.year, points: 1 });
+      if (c.key === 'paint') return paintShare(l, s.paint);
+      if (c.key === 'changed') return changedShare(l, s.changed);
       if (c.color) return (colorOf(l) || {}).key === c.color ? 1 : 0;
       if (c.crit) return crit[c.crit] && crit[c.crit].met ? 1 : 0;
       return 0;
@@ -994,7 +1032,7 @@
   const IMPORTANT_SHARE = 0.1;
   const importantOf = (cfg) => (cfg.calibration && Array.isArray(cfg.calibration.important) ? cfg.calibration.important : IMPORTANT_DEFAULT);
   // Tramer ve renkler işaretlenemez: tramer basamakları ve "renklerden sadece en yükseği" kuralı alt sınırla karışır
-  const floorable = (c) => c.key === 'km' || c.key === 'price' || c.key === 'year' || !!c.crit;
+  const floorable = (c) => ['km', 'price', 'year', 'paint', 'changed'].includes(c.key) || !!c.crit;
 
   // floors: bileşen başına alt sınır (puan). Alt sınırın üstündeki kısım ≥ 0, tramer basamakları monoton,
   // toplam puan S'de sabit.
@@ -1069,6 +1107,8 @@
     };
     if (!s.price || !s.price.points) s.price = range((l) => l.price, true);
     if (!s.year || !s.year.points) s.year = range((l) => l.year, false);
+    if (!s.paint) s.paint = clone(DEFAULT_CONFIG.scoring.paint);
+    if (!s.changed) s.changed = clone(DEFAULT_CONFIG.scoring.changed);
     // Sıraladığın ilanlarda geçen renkler (henüz puanı olmayanlar 0 ile eklenir)
     s.colors = (s.colors || []).slice();
     const colorCount = {};
@@ -1142,6 +1182,8 @@
     ];
     if (s.price && s.price.points > 0) lines.push(`Fiyat: ${s.price.points} puan (${fmtTL(s.price.best)} ve altı tam puan, ${fmtTL(s.price.worst)} ve üstü 0)`);
     if (s.year && s.year.points > 0) lines.push(`Model yılı: ${s.year.points} puan (${s.year.best} ve sonrası tam puan, ${s.year.worst} ve öncesi 0)`);
+    if (s.paint && s.paint.points > 0) lines.push(`Boyalı parça: ${s.paint.points} puan (hiç boyalı yoksa tam puan, ${s.paint.worst} ve üstü 0; lokal boyalı yarım sayılır)`);
+    if (s.changed && s.changed.points > 0) lines.push(`Değişen parça: ${s.changed.points} puan (hiç değişen yoksa tam puan, ${s.changed.worst} ve üstü 0)`);
     const cols = (s.colors || []).filter((c) => c.points > 0);
     if (cols.length) lines.push(`Renk tercihi: ${cols.map((c) => `${c.name} ${c.points}`).join(', ')} puan (diğer renkler 0)`);
     for (const c of s.criteria.filter((c) => c.points > 0)) lines.push(`${c.name}: ${c.points} puan`);
@@ -1231,7 +1273,7 @@
     DEFAULT_CONFIG, fold, findKeyword, parseTramer, evalHard, evalCriteria, kmScore, tramerScore, scoreListing, ruleFlags, marketModel, computeRows, claudePrompt,
     stableStringify, mergeSame, combineOther, ownCopyOf, manualOf, STATUSES, trackOf, comparePrompt,
     countPhotoAnswer, voteDecided, voteResult, spreadOrder, visionAccuracy, listBadge, visionKey,
-    rangeScore, calibrate, pairAgreement, colorOf, isSold, sameCar, findRelist, relistOf, importantOf,
+    rangeScore, calibrate, pairAgreement, colorOf, partCounts, isSold, sameCar, findRelist, relistOf, importantOf,
     EMPTY_FILTER, filterFacets, rowHas, filterActive, matchFilter, applyFilter, facetCounts,
   };
   if (typeof module !== 'undefined' && module.exports) {
@@ -2616,6 +2658,14 @@
     (s.tramer.tiers || []).forEach((t, i) => out.push({ g: 'Tramer', label: `${fmtNum(t.below)} TL altı`, path: ['scoring', 'tramer', 'tiers', i, 'points'], min: 0, max: 100, step: 1 }));
     if (s.price) out.push({ g: 'Fiyat ve yıl', label: 'Fiyat puanı', path: ['scoring', 'price', 'points'], min: 0, max: 100, step: 1 });
     if (s.year) out.push({ g: 'Fiyat ve yıl', label: 'Model yılı puanı', path: ['scoring', 'year', 'points'], min: 0, max: 100, step: 1 });
+    if (s.paint) {
+      out.push({ g: 'Boya/değişen', label: 'Boyalı parça puanı', path: ['scoring', 'paint', 'points'], min: 0, max: 100, step: 1 });
+      out.push({ g: 'Boya/değişen', label: 'Bu kadar boyalı ve üstü 0', path: ['scoring', 'paint', 'worst'], min: 1, max: 13, step: 1 });
+    }
+    if (s.changed) {
+      out.push({ g: 'Boya/değişen', label: 'Değişen parça puanı', path: ['scoring', 'changed', 'points'], min: 0, max: 100, step: 1 });
+      out.push({ g: 'Boya/değişen', label: 'Bu kadar değişen ve üstü 0', path: ['scoring', 'changed', 'worst'], min: 1, max: 13, step: 1 });
+    }
     (s.colors || []).forEach((c, i) => out.push({ g: 'Renk', label: c.name, path: ['scoring', 'colors', i, 'points'], min: 0, max: 100, step: 1 }));
     (s.criteria || []).forEach((c, i) => out.push({ g: 'Kriterler', label: c.name, path: ['scoring', 'criteria', i, 'points'], min: 0, max: 100, step: 1 }));
     return out;
@@ -3258,6 +3308,9 @@
     if (!s.km || !s.tramer || !Array.isArray(s.criteria)) throw new Error('scoring içinde km, tramer ve criteria gerekli.');
     if (s.colors !== undefined && (!Array.isArray(s.colors) || s.colors.some((c) => !c || typeof c.name !== 'string' || typeof c.points !== 'number'))) {
       throw new Error('scoring.colors şu biçimde olmalı: [{ "name": "Siyah", "points": 10 }, …]');
+    }
+    for (const k of ['paint', 'changed']) {
+      if (s[k] !== undefined && !(typeof s[k].points === 'number' && typeof s[k].worst === 'number' && s[k].worst > 0)) throw new Error(`scoring.${k} içinde points ve worst (0'dan büyük) sayı olmalı.`);
     }
     for (const k of ['price', 'year']) {
       if (s[k] !== undefined && !['points', 'best', 'worst'].every((f) => typeof s[k][f] === 'number')) throw new Error(`scoring.${k} içinde points, best ve worst sayı olmalı.`);

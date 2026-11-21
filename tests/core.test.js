@@ -346,6 +346,39 @@ const withRel = { ...relisted, relist: { at: 5, of: '900', oldTitle: 'eski', old
 eq('geri eklenen: rozet bilgisi', [A.listBadge(withRel, cfg).relist, A.listBadge(withRel, cfg).title.startsWith('GERİ EKLENEN İLAN')], [true, true]);
 eq('geri eklenen: Claude metninde', A.comparePrompt(A.computeRows({ 901: withRel }, cfg).passed, cfg).includes('GERİ EKLENEN İLAN'), true);
 
+// Boyalı ve değişen parça sayısı
+const P = (painted, local, changed) => {
+  const parts = { Tavan: 'orijinal', 'Motor Kaputu': 'orijinal' };
+  ['Sağ Ön Çamurluk', 'Sol Ön Çamurluk', 'Sağ Ön Kapı', 'Sol Ön Kapı'].slice(0, painted).forEach((k) => { parts[k] = 'boyalı'; });
+  ['Ön Tampon', 'Arka Tampon'].slice(0, local).forEach((k) => { parts[k] = 'lokal boyalı'; });
+  ['Bagaj Kapağı', 'Sağ Arka Kapı'].slice(0, changed).forEach((k) => { parts[k] = 'değişmiş'; });
+  return parts;
+};
+eq('parça sayımı', A.partCounts({ parts: P(2, 1, 1) }), { known: true, painted: 2, local: 1, changed: 1 });
+eq('parça sayımı: bilgi yok', A.partCounts({ parts: {} }).known, false);
+const cfgPC = JSON.parse(JSON.stringify(cfg));
+cfgPC.scoring.paint = { points: 20, worst: 4 };
+cfgPC.scoring.changed = { points: 10, worst: 2 };
+const lineOf = (l, name) => A.scoreListing(l, cfgPC).lines.find((x) => x.name === name);
+eq('boyalı: hiç yok tam puan', lineOf({ ...base, parts: P(0, 0, 0) }, 'Boyalı parça').points, 20);
+eq('boyalı: 2 boyalı + 1 lokal → yarıdan az', lineOf({ ...base, parts: P(2, 1, 0) }, 'Boyalı parça').points, 20 * (1 - 2.5 / 4));
+eq('boyalı: 4 ve üstü 0', lineOf({ ...base, parts: P(4, 2, 0) }, 'Boyalı parça').points, 0);
+eq('değişen: 1 değişen yarı puan', lineOf({ ...base, parts: P(0, 0, 1) }, 'Değişen parça').points, 5);
+eq('boya bilgisi okunamazsa puan yok', [lineOf({ ...base, parts: {} }, 'Boyalı parça').points, lineOf({ ...base, parts: {} }, 'Değişen parça').via], [0, 'okunamadı']);
+eq('varsayılan 0 puan: döküme girmez', A.scoreListing({ ...base, parts: P(2, 0, 1) }, cfg).lines.some((x) => x.name === 'Boyalı parça'), false);
+// Boyaya önem veren gizli tercih geri bulunmalı
+const PL = {};
+for (let i = 0; i < 20; i++) PL['p' + i] = { ...CL['c' + i], id: 'p' + i, parts: P(i % 5, i % 2, i % 7 === 0 ? 1 : 0) };
+const hiddenP = JSON.parse(JSON.stringify(cfg));
+hiddenP.scoring.paint = { points: 60, worst: 4 };
+hiddenP.scoring.changed = { points: 30, worst: 2 };
+hiddenP.scoring.km.points = 20;
+const porder = Object.values(PL).sort((a, b) => A.scoreListing(b, hiddenP).total - A.scoreListing(a, hiddenP).total).map((l) => l.id);
+const pc = A.calibrate(PL, porder, cfg, { important: [] });
+eq('kalibrasyon: boyalı parçanın önemini bulur', pc.suggested.scoring.paint.points >= 25, true);
+eq('kalibrasyon: değişen parçaya puan verir', pc.suggested.scoring.changed.points > 0, true);
+eq('kalibrasyon: uyum yüksek', pc.after >= 0.9, true);
+
 // ayarlar-bmw.json, script'teki varsayılan ayarların birebir kopyası olmalı
 const fileCfg = JSON.parse(require('fs').readFileSync(path.join(__dirname, '..', 'ayarlar-bmw.json'), 'utf8'));
 eq('ayarlar-bmw.json = DEFAULT_CONFIG', require('util').isDeepStrictEqual(fileCfg, A.DEFAULT_CONFIG), true);

@@ -50,6 +50,14 @@
       "best": 2024,
       "worst": 2020
     },
+    "paint": {
+      "points": 0,
+      "worst": 4
+    },
+    "changed": {
+      "points": 0,
+      "worst": 2
+    },
     "colors": [],
     "tramer": {
       "noRecordPoints": 20,
